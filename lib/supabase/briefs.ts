@@ -1,23 +1,38 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ProjectBrief } from "@/lib/types";
 
+function safeIsoDate(d?: any): string {
+  if (!d) return new Date().toISOString();
+  try {
+    const parsed = new Date(d);
+    return isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
+  } catch {
+    return new Date().toISOString();
+  }
+}
+
 /**
  * Fetch all briefs for the authenticated user, ordered by most recently updated.
  */
 export async function fetchUserBriefs(
   supabase: SupabaseClient
 ): Promise<ProjectBrief[]> {
-  const { data, error } = await supabase
-    .from("briefs")
-    .select("*")
-    .order("updated_at", { ascending: false });
+  try {
+    const { data, error } = await supabase
+      .from("briefs")
+      .select("*")
+      .order("updated_at", { ascending: false });
 
-  if (error) {
-    console.error("Error fetching briefs from Supabase:", error.message);
+    if (error) {
+      console.error("Error fetching briefs from Supabase:", error.message);
+      return [];
+    }
+
+    return (data || []).map(rowToBrief);
+  } catch (err: any) {
+    console.error("Exception fetching briefs from Supabase:", err);
     return [];
   }
-
-  return (data || []).map(rowToBrief);
 }
 
 /**
@@ -42,7 +57,7 @@ export async function saveBriefToDb(
         brief_data: brief,
         updated_at: now,
       },
-      { onConflict: "id" }
+      { onConflict: "id,user_id" }
     )
     .select()
     .single();
@@ -114,20 +129,25 @@ export async function migrateLocalBriefsToDb(
     status: brief.status || "draft",
     source_text: brief.source_text || "",
     brief_data: brief,
-    created_at: brief.created_at || new Date().toISOString(),
-    updated_at: brief.updated_at || new Date().toISOString(),
+    created_at: safeIsoDate(brief.created_at),
+    updated_at: safeIsoDate(brief.updated_at),
   }));
 
-  const { error } = await supabase
-    .from("briefs")
-    .upsert(rows, { onConflict: "id" });
+  try {
+    const { error } = await supabase
+      .from("briefs")
+      .upsert(rows, { onConflict: "id,user_id" });
 
-  if (error) {
-    console.error("Error migrating local briefs to Supabase:", error.message);
+    if (error) {
+      console.warn("Notice during local briefs migration:", error.message);
+      return 0;
+    }
+
+    return rows.length;
+  } catch (err: any) {
+    console.warn("Exception migrating local briefs:", err);
     return 0;
   }
-
-  return rows.length;
 }
 
 // ---- Helpers ----

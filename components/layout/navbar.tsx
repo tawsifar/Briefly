@@ -46,7 +46,8 @@ export function Navbar({
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [emailSubmitting, setEmailSubmitting] = useState(false);
+  const [googleSubmitting, setGoogleSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSuccessMsg, setAuthSuccessMsg] = useState<string | null>(null);
 
@@ -93,7 +94,7 @@ export function Navbar({
       return;
     }
 
-    setSubmitting(true);
+    setEmailSubmitting(true);
 
     try {
       if (authMode === "signin") {
@@ -115,43 +116,56 @@ export function Navbar({
         );
         if (error) {
           setAuthError(error.message);
+        } else if (
+          createdUser &&
+          createdUser.identities &&
+          createdUser.identities.length === 0
+        ) {
+          setAuthError("An account with this email already exists. Please switch to Sign In.");
+        } else if (
+          createdUser &&
+          !createdUser.confirmed_at &&
+          (!createdUser.identities || createdUser.identities.length > 0)
+        ) {
+          setAuthSuccessMsg(
+            "Account created! If email confirmation is required, please check your inbox to verify your email."
+          );
+          showToast("Account created successfully!");
         } else {
-          // Check if email confirmation is required by Supabase
-          if (createdUser && !createdUser.confirmed_at && (!createdUser.identities || createdUser.identities.length > 0)) {
-            setAuthSuccessMsg(
-              "Account created! If email confirmation is enabled, please check your inbox to verify your email."
-            );
-            showToast("Account created successfully!");
-          } else {
-            setShowAuthModal(false);
-            setEmail("");
-            setPassword("");
-            setFullName("");
-            showToast("Welcome to Briefly! Your account is ready.");
-            onNavigate?.("dashboard");
-          }
+          setShowAuthModal(false);
+          setEmail("");
+          setPassword("");
+          setFullName("");
+          showToast("Welcome to Briefly! Your account is ready.");
+          onNavigate?.("dashboard");
         }
       }
     } catch (err: any) {
       setAuthError(err.message || "An unexpected authentication error occurred.");
     } finally {
-      setSubmitting(false);
+      setEmailSubmitting(false);
     }
   };
 
   const handleGoogleSignIn = async () => {
     setAuthError(null);
-    setSubmitting(true);
+    setAuthSuccessMsg(null);
+    setGoogleSubmitting(true);
+
     try {
       const { error } = await signInWithGoogle();
       if (error) {
         setAuthError(error.message);
-        setSubmitting(false);
+        setGoogleSubmitting(false);
+      } else {
+        // Fallback reset in case browser redirect is cancelled
+        setTimeout(() => {
+          setGoogleSubmitting(false);
+        }, 5000);
       }
-      // On success, browser will redirect to Google OAuth flow
     } catch (err: any) {
       setAuthError(err.message || "Failed to initialize Google authentication.");
-      setSubmitting(false);
+      setGoogleSubmitting(false);
     }
   };
 
@@ -186,7 +200,7 @@ export function Navbar({
             </button>
           </div>
 
-          {/* Center/right navigation: Dashboard, How it works, Examples, Product */}
+          {/* Navigation */}
           <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-neutral-600 dark:text-neutral-300">
             <button
               id="nav-link-dashboard"
@@ -225,7 +239,7 @@ export function Navbar({
             </button>
           </nav>
 
-          {/* Right: User menu or Sign In, Theme toggle, Create a brief */}
+          {/* Right: Auth, Theme toggle, Create */}
           <div className="flex items-center gap-3">
             <ThemeToggle />
 
@@ -305,13 +319,15 @@ export function Navbar({
                 )}
               </div>
             ) : (
-              /* Unauthenticated Sign In Button */
+              /* Sign In Button */
               <button
                 id="nav-signin-btn"
                 onClick={() => {
                   setAuthMode("signin");
                   setAuthError(null);
                   setAuthSuccessMsg(null);
+                  setEmailSubmitting(false);
+                  setGoogleSubmitting(false);
                   setShowAuthModal(true);
                 }}
                 className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 hover:text-neutral-950 dark:hover:text-white px-2.5 py-1.5 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
@@ -377,28 +393,37 @@ export function Navbar({
               type="button"
               id="google-signin-btn"
               onClick={handleGoogleSignIn}
-              disabled={submitting}
-              className="w-full py-2.5 px-4 bg-white dark:bg-[#1E2330] hover:bg-neutral-50 dark:hover:bg-[#252B3B] text-neutral-800 dark:text-neutral-200 text-xs font-semibold rounded-xl border border-neutral-300 dark:border-neutral-700 shadow-2xs transition-all flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={googleSubmitting}
+              className="w-full py-2.5 px-4 bg-white dark:bg-[#1E2330] hover:bg-neutral-50 dark:hover:bg-[#252B3B] text-neutral-800 dark:text-neutral-200 text-xs font-semibold rounded-xl border border-neutral-300 dark:border-neutral-700 shadow-2xs transition-all flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <svg className="w-4 h-4" viewBox="0 0 24 24">
-                <path
-                  fill="#4285F4"
-                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                />
-                <path
-                  fill="#34A853"
-                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                />
-                <path
-                  fill="#EA4335"
-                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                />
-              </svg>
-              <span>Continue with Google</span>
+              {googleSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-neutral-500" />
+                  <span>Connecting to Google...</span>
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" viewBox="0 0 24 24">
+                    <path
+                      fill="#4285F4"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                    />
+                  </svg>
+                  <span>Continue with Google</span>
+                </>
+              )}
             </button>
 
             {/* Divider */}
@@ -476,11 +501,14 @@ export function Navbar({
               <button
                 type="submit"
                 id="email-auth-submit-btn"
-                disabled={submitting}
-                className="w-full mt-2 py-2.5 bg-neutral-950 hover:bg-neutral-800 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-neutral-950 text-xs font-semibold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
+                disabled={emailSubmitting}
+                className="w-full mt-2 py-2.5 bg-neutral-950 hover:bg-neutral-800 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-neutral-950 text-xs font-semibold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed shadow-xs"
               >
-                {submitting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                {emailSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Please wait...</span>
+                  </>
                 ) : (
                   <>
                     <span>{authMode === "signin" ? "Sign In" : "Create Account"}</span>
