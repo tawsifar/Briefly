@@ -11,21 +11,28 @@ import {
   Clock,
   ArrowRight,
   Trash2,
+  Loader2,
+  Cloud,
+  HardDrive,
 } from "lucide-react";
 import { deleteBrief } from "@/lib/storage";
 import { useToast } from "@/components/ui/toast";
+import { useAuth, getUserDisplayName } from "@/lib/auth-context";
 
 interface DashboardViewProps {
   briefs: ProjectBrief[];
   onSelectBrief: (brief: ProjectBrief) => void;
   onCreateBrief: () => void;
   onRefreshBriefs?: () => void;
+  onDeleteBrief?: (id: string) => Promise<void> | void;
+  loading?: boolean;
 }
 
 function formatRelativeTime(dateString?: string): string {
   if (!dateString) return "Recently";
   const now = Date.now();
   const date = new Date(dateString).getTime();
+  if (isNaN(date)) return "Recently";
   const diffMinutes = Math.max(1, Math.floor((now - date) / (1000 * 60)));
 
   if (diffMinutes < 60) {
@@ -44,24 +51,48 @@ export function DashboardView({
   onSelectBrief,
   onCreateBrief,
   onRefreshBriefs,
+  onDeleteBrief,
+  loading = false,
 }: DashboardViewProps) {
+  const { user } = useAuth();
   const { showToast } = useToast();
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<"all" | "complete" | "needs_review">("all");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const displayName = getUserDisplayName(user);
 
   const filtered = briefs.filter((b) => {
-    const matchesSearch =
-      b.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      b.project.summary.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === "all" || b.status === statusFilter;
-    return matchesSearch && matchesStatus;
+    const titleMatch = (b.title || "").toLowerCase().includes(searchQuery.toLowerCase());
+    const summaryText =
+      b.project?.summary || b.executiveSummary?.paragraph || b.source_text || "";
+    const summaryMatch = summaryText.toLowerCase().includes(searchQuery.toLowerCase());
+
+    const isComplete = b.status === "complete" || b.status === "EVIDENCE CHECKED";
+    const matchesStatus =
+      statusFilter === "all" ||
+      (statusFilter === "complete" && isComplete) ||
+      (statusFilter === "needs_review" && !isComplete);
+
+    return (titleMatch || summaryMatch) && matchesStatus;
   });
 
-  const handleDelete = (e: React.MouseEvent, id: string) => {
+  const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    deleteBrief(id);
-    onRefreshBriefs?.();
-    showToast("Brief removed from workspace");
+    setDeletingId(id);
+    try {
+      if (onDeleteBrief) {
+        await onDeleteBrief(id);
+      } else {
+        deleteBrief(id);
+        onRefreshBriefs?.();
+      }
+      showToast("Brief removed from workspace");
+    } catch (err: any) {
+      showToast(err.message || "Failed to delete brief", "error");
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   return (
@@ -69,11 +100,26 @@ export function DashboardView({
       {/* Dashboard Headline & Subtitle */}
       <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-6 pb-8 border-b border-neutral-200/80 dark:border-neutral-800">
         <div>
-          <span className="text-[11px] font-mono font-bold uppercase tracking-widest text-neutral-400 dark:text-neutral-500 block mb-1">
-            PROJECT INTAKE DASHBOARD
-          </span>
+          <div className="flex items-center gap-3 mb-1.5">
+            <span className="text-[11px] font-mono font-bold uppercase tracking-widest text-neutral-400 dark:text-neutral-500">
+              PROJECT INTAKE DASHBOARD
+            </span>
+            {user ? (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-800">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <Cloud className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                Cloud Memory Active
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-medium bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700">
+                <HardDrive className="w-3 h-3 text-neutral-400" />
+                Local Workspace
+              </span>
+            )}
+          </div>
+
           <h1 className="text-3xl sm:text-4xl font-extrabold text-neutral-950 dark:text-white tracking-tight uppercase font-sans">
-            GOOD MORNING.
+            {user ? `WELCOME BACK, ${displayName.toUpperCase()}.` : "GOOD MORNING."}
           </h1>
           <p className="mt-2 text-base sm:text-lg text-neutral-600 dark:text-neutral-300 font-normal">
             &ldquo;Let&apos;s make the messy parts clear.&rdquo;
@@ -100,15 +146,15 @@ export function DashboardView({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search briefs by client or scope..."
-            className="w-full text-xs pl-10 pr-4 py-2 bg-white dark:bg-[#161B22] border border-neutral-200 dark:border-neutral-800 rounded-xl focus:outline-hidden focus:ring-1 focus:ring-neutral-900 dark:focus:ring-white text-neutral-800 dark:text-neutral-200 placeholder-neutral-400"
+            className="w-full text-xs pl-10 pr-4 py-2.5 bg-white dark:bg-[#161B22] border border-neutral-200 dark:border-neutral-800 rounded-xl focus:outline-hidden focus:ring-1 focus:ring-neutral-900 dark:focus:ring-white text-neutral-800 dark:text-neutral-200 placeholder-neutral-400 shadow-2xs"
           />
         </div>
 
-        {/* Minimal status tabs */}
+        {/* Status tabs */}
         <div className="flex items-center gap-1 text-xs font-medium text-neutral-600 dark:text-neutral-400">
           <button
             onClick={() => setStatusFilter("all")}
-            className={`px-3 py-1.5 rounded-lg transition-colors ${
+            className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
               statusFilter === "all"
                 ? "bg-neutral-200/80 dark:bg-neutral-800 text-neutral-950 dark:text-white font-bold"
                 : "hover:text-neutral-900 dark:hover:text-white"
@@ -118,7 +164,7 @@ export function DashboardView({
           </button>
           <button
             onClick={() => setStatusFilter("needs_review")}
-            className={`px-3 py-1.5 rounded-lg transition-colors ${
+            className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
               statusFilter === "needs_review"
                 ? "bg-neutral-200/80 dark:bg-neutral-800 text-neutral-950 dark:text-white font-bold"
                 : "hover:text-neutral-900 dark:hover:text-white"
@@ -128,7 +174,7 @@ export function DashboardView({
           </button>
           <button
             onClick={() => setStatusFilter("complete")}
-            className={`px-3 py-1.5 rounded-lg transition-colors ${
+            className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
               statusFilter === "complete"
                 ? "bg-neutral-200/80 dark:bg-neutral-800 text-neutral-950 dark:text-white font-bold"
                 : "hover:text-neutral-900 dark:hover:text-white"
@@ -139,7 +185,7 @@ export function DashboardView({
         </div>
       </div>
 
-      {/* Restrained Recent Briefs Area */}
+      {/* Recent Briefs Area */}
       <div className="space-y-4">
         <div className="flex items-center justify-between pb-2">
           <span className="text-xs font-mono uppercase font-bold tracking-wider text-neutral-400 dark:text-neutral-500">
@@ -150,27 +196,36 @@ export function DashboardView({
           </span>
         </div>
 
-        {filtered.length === 0 ? (
+        {loading ? (
+          <div className="p-16 text-center bg-white dark:bg-[#13161F] rounded-2xl border border-neutral-200/80 dark:border-neutral-800 my-4 flex flex-col items-center justify-center gap-3">
+            <Loader2 className="w-6 h-6 animate-spin text-neutral-400 dark:text-neutral-500" />
+            <p className="text-xs text-neutral-500 font-mono">Syncing your briefs from cloud...</p>
+          </div>
+        ) : filtered.length === 0 ? (
           <div className="p-12 text-center bg-white dark:bg-[#13161F] rounded-2xl border border-neutral-200/80 dark:border-neutral-800 my-4">
             <p className="text-sm font-medium text-neutral-600 dark:text-neutral-300">
-              No briefs match your query.
+              {searchQuery ? "No briefs match your search." : "No briefs in your workspace yet."}
+            </p>
+            <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1 mb-4">
+              Turn messy client emails, notes, or transcripts into structured project briefs.
             </p>
             <button
               onClick={onCreateBrief}
-              className="mt-3 px-4 py-2 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-xs font-bold rounded-lg"
+              className="px-4 py-2 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-xs font-bold rounded-lg cursor-pointer hover:opacity-90 shadow-xs"
             >
-              Create a brief →
+              Create your first brief →
             </button>
           </div>
         ) : (
-          /* Editorial, restrained list matching exact spec */
           <div className="divide-y divide-neutral-200/80 dark:divide-neutral-800 bg-white dark:bg-[#13161F] rounded-2xl border border-neutral-200/90 dark:border-neutral-800 shadow-2xs overflow-hidden">
             {filtered.map((brief) => {
-              const questionCount = brief.questions?.length || 0;
+              const questionCount =
+                brief.questions?.length || brief.structuredQuestions?.length || 0;
               const questionLabel =
                 questionCount === 1 ? "1 question" : `${questionCount} questions`;
 
-              const riskCount = brief.risks?.length || 0;
+              const riskCount =
+                brief.risks?.length || brief.structuredRisks?.length || 0;
               const riskLabel =
                 riskCount === 0
                   ? "No critical risks"
@@ -178,8 +233,16 @@ export function DashboardView({
                   ? "1 risk"
                   : `${riskCount} risks`;
 
-              const clarityPct = brief.scores?.overall || 80;
+              const clarityPct =
+                brief.clarityData?.overall || brief.scores?.overall || 85;
               const timeString = formatRelativeTime(brief.updated_at);
+              const isComplete =
+                brief.status === "complete" || brief.status === "EVIDENCE CHECKED";
+
+              const summaryText =
+                brief.project?.summary ||
+                brief.executiveSummary?.paragraph ||
+                (brief.source_text ? brief.source_text.slice(0, 140) + "..." : "No summary available.");
 
               return (
                 <div
@@ -187,7 +250,7 @@ export function DashboardView({
                   onClick={() => onSelectBrief(brief)}
                   className="group p-5 sm:p-6 hover:bg-neutral-50/80 dark:hover:bg-[#181D28] transition-colors cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-4"
                 >
-                  {/* Title & Hierarchy */}
+                  {/* Title & Summary */}
                   <div className="space-y-1.5 max-w-xl">
                     <div className="flex items-center gap-2.5">
                       <h3 className="text-base sm:text-lg font-bold text-neutral-950 dark:text-white group-hover:text-neutral-800 dark:group-hover:text-neutral-200 tracking-tight">
@@ -195,21 +258,21 @@ export function DashboardView({
                       </h3>
                       <span
                         className={`text-[9px] uppercase font-mono font-bold px-2 py-0.5 rounded ${
-                          brief.status === "complete"
+                          isComplete
                             ? "bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800"
                             : "bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800"
                         }`}
                       >
-                        {brief.status === "complete" ? "Verified" : "Needs Review"}
+                        {isComplete ? "Verified" : "Needs Review"}
                       </span>
                     </div>
 
                     <p className="text-xs text-neutral-600 dark:text-neutral-300 line-clamp-1">
-                      {brief.project.summary}
+                      {summaryText}
                     </p>
                   </div>
 
-                  {/* Restrained Metrics Column */}
+                  {/* Metrics Column */}
                   <div className="flex items-center gap-4 sm:gap-6 text-xs text-neutral-600 dark:text-neutral-400 font-mono shrink-0">
                     <div className="flex items-center gap-3">
                       <span className="font-bold text-neutral-950 dark:text-white">
@@ -236,10 +299,15 @@ export function DashboardView({
                     <div className="flex items-center gap-2 pl-2 border-l border-neutral-200 dark:border-neutral-800">
                       <button
                         onClick={(e) => handleDelete(e, brief.id)}
-                        className="p-1.5 text-neutral-300 dark:text-neutral-600 hover:text-rose-600 dark:hover:text-rose-400 transition-colors"
+                        disabled={deletingId === brief.id}
+                        className="p-1.5 text-neutral-300 dark:text-neutral-600 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer disabled:opacity-50"
                         title="Delete brief"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        {deletingId === brief.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-3.5 h-3.5" />
+                        )}
                       </button>
                       <ArrowRight className="w-4 h-4 text-neutral-400 dark:text-neutral-500 group-hover:text-neutral-900 dark:group-hover:text-white group-hover:translate-x-0.5 transition-all" />
                     </div>
