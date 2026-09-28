@@ -1,0 +1,6 @@
+{
+  "name": "Briefly",
+  "description": "Turn messy client requests into clear, actionable project briefs with scope, timelines, unknowns, risks, and next steps.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

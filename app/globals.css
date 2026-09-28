@@ -1,0 +1,46 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@keyframes connectorDash {
+  0% {
+    stroke-dashoffset: 24;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+.connector-flow-dash {
+  animation: connectorDash 1.2s linear infinite;
+}
+
+@keyframes floatDashboard {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.animate-float-dashboard {
+  animation: floatDashboard 5.5s ease-in-out infinite;
+}
+
+.hero-dashboard-floating-shadow {
+  box-shadow:
+    0 10px 25px -5px rgba(0, 0, 0, 0.16),
+    0 25px 50px -12px rgba(0, 0, 0, 0.25),
+    0 45px 95px -20px rgba(0, 0, 0, 0.28),
+    0 4px 12px 0 rgba(0, 0, 0, 0.08),
+    0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.dark .hero-dashboard-floating-shadow {
+  box-shadow:
+    0 15px 35px -8px rgba(0, 0, 0, 0.75),
+    0 35px 75px -15px rgba(0, 0, 0, 0.90),
+    0 60px 120px -25px rgba(0, 0, 0, 0.95),
+    0 4px 16px 0 rgba(0, 0, 0, 0.60),
+    0 0 0 1px rgba(255, 255, 255, 0.08);
+}

@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Testing
+coverage/
+
+# Next.js build output
+.next/
+out/
+build/
+
+# Vercel deployment artifacts
+.vercel
+
+# Archives & temporary files
+*.zip
+*.tar.gz
+
+# Environment files with secrets (NEVER commit these)
+.env*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS metadata & security
+.DS_Store
+*.pem
+Thumbs.db
