@@ -13,6 +13,8 @@ export function normalizeTextForEvidence(str: string): string {
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, "-") // en dash, em dash -> standard hyphen
+    .replace(/\.{3,}|\u2026/g, " ") // replace ellipses (...) with space
+    .replace(/[^\w\s'-]/g, " ") // remove punctuation marks
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -20,8 +22,22 @@ export function normalizeTextForEvidence(str: string): string {
 export function isSubstringOfSource(evidence: string, sourceText: string): boolean {
   if (!evidence) return false;
   const normEvidence = normalizeTextForEvidence(evidence);
+  if (!normEvidence) return false;
   const normSource = normalizeTextForEvidence(sourceText);
-  return normSource.includes(normEvidence);
+  if (normSource.includes(normEvidence)) return true;
+
+  // Fuzzy fallback: If evidence has 3+ words, check if significant content words appear in source
+  const evidenceWords = normEvidence.split(" ").filter((w) => w.length > 2);
+  if (evidenceWords.length >= 3) {
+    let matchCount = 0;
+    for (const word of evidenceWords) {
+      if (normSource.includes(word)) matchCount++;
+    }
+    if (matchCount / evidenceWords.length >= 0.75) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Banned words per Rule 12 / V5
@@ -222,16 +238,30 @@ export function validateAndCleanBrief(
     computedTotalScore += Math.round(dim.score);
   }
 
-  // V4: Dates validation
+  // V4: Dates validation & deadline safety net
   const targetDeadline = output.targetDeadline;
   targetDeadline.displayLine1 = sanitizeStyleText(targetDeadline.displayLine1);
   targetDeadline.displayLine2 = sanitizeStyleText(targetDeadline.displayLine2);
 
+  // Safety net: check if client gave deadline wording or if source text contains explicit timeline cues
+  const line1Lower = targetDeadline.displayLine1.toLowerCase();
   if (targetDeadline.clientWording) {
-    const line1Lower = targetDeadline.displayLine1.toLowerCase();
     if (line1Lower.includes("to be confirmed") || line1Lower.includes("not specified")) {
       issues.push(`V4: Client gave deadline wording "${targetDeadline.clientWording}" but Line 1 says "${targetDeadline.displayLine1}"`);
       targetDeadline.displayLine1 = targetDeadline.clientWording;
+    }
+  } else if (line1Lower.includes("not specified") || line1Lower.includes("to be confirmed")) {
+    // Scan sourceText for date/timeline keywords that the LLM may have missed
+    const dateMatch = sourceText.match(
+      /(?:(?:the\s+)?deadline(?:\s+is)?|due(?:\s+by)?|launch(?:\s+by)?|target(?:\s+is)?|finish(?:\s+by)?|ready(?:\s+by)?|before|about|around)?\s*(?:the\s+)?(end\s+of\s+[a-z]+|middle\s+of\s+[a-z]+|mid-[a-z]+|beginning\s+of\s+[a-z]+|(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?|\d{1,2}(?:st|nd|rd|th)?\s+of\s+[a-z]+|in\s+\d+\s*(?:weeks?|months?|days?)|next\s+(?:month|week|quarter)|by\s+[a-z]+(?:\s+\d{1,2})?)/i
+    );
+    if (dateMatch && dateMatch[0]) {
+      const recovered = dateMatch[0].trim();
+      targetDeadline.clientWording = recovered;
+      targetDeadline.displayLine1 = recovered.charAt(0).toUpperCase() + recovered.slice(1);
+      targetDeadline.displayLine2 = `Target deadline derived from client message (${recovered}). Exact launch milestone date to be confirmed during kickoff.`;
+      targetDeadline.milestoneType = "approximate_target";
+      issues.push(`V4: Recovered client deadline wording "${recovered}" from source communication`);
     }
   }
 

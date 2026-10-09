@@ -38,7 +38,7 @@ interface UploadedFileItem {
 }
 
 const VERTICAL_PROCESSING_STAGES = [
-  { id: "01", label: "Reading source", detail: "Normalizing text and attachments..." },
+  { id: "01", label: "Reading source & OCR", detail: "Transcribing documents, extracting OCR, and normalizing..." },
   { id: "02", label: "Finding requirements", detail: "Isolating confirmed features & technical expectations..." },
   { id: "03", label: "Detecting ambiguities", detail: "Identifying subjective language & loose date ranges..." },
   { id: "04", label: "Checking scope", detail: "Separating core commitments from future phases..." },
@@ -122,15 +122,19 @@ export function CreateBriefCanvas({ onBriefGenerated, onCancel }: CreateBriefCan
       });
     }, 850);
 
+    const now = new Date();
+    const createdDate = now.toISOString().split("T")[0];
+    const weekday = now.toLocaleDateString("en-US", { weekday: "long" });
+
     try {
       const res = await fetch("/api/briefs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          text: effectiveText || `Analyzed from ${files.length} uploaded attachments.`,
+          text: effectiveText,
           projectNameHint: projectNameHint.trim() || undefined,
-          createdDate: "2026-09-28",
-          weekday: "Monday",
+          createdDate,
+          weekday,
           files: files.map((f) => ({
             name: f.name,
             size: f.size,

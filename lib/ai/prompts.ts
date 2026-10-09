@@ -26,16 +26,16 @@ RULE 3: PLACEMENT
 
 RULE 4: DATES AND TIMELINE RESOLUTION
 You will be provided with createdDate and its weekday.
-Resolve every relative time expression ("next month", "first week of next month", "end of the quarter") against createdDate and return ISO dates in resolvedStart and resolvedEnd.
-Never say a deadline is missing if the client expressed any time expectation. Instead describe precision and feasibility.
-Distinguish soft launch from full launch.
-State how many days the window starts and ends after createdDate. If "first week" can mean two ranges (for example Oct 1 to 7 versus the week starting Monday Oct 5), explicitly flag that in Section 3.
+Resolve every time expression, whether exact ("October 31"), approximate ("about the end of October", "around mid-November", "early next month"), relative ("in 3 weeks", "next month", "end of the quarter"), or seasonal ("before the holiday season") against createdDate and return ISO dates in resolvedStart and resolvedEnd where possible.
+CRITICAL: Never say a deadline is missing or unspecified if the client expressed ANY time expectation. If the client states "about the end of October", record that exact intent. Describe precision, feasibility, and potential milestones.
+Distinguish soft launch from full launch or approximate targets.
+State how many days the window starts and ends after createdDate. If a range is ambiguous, explicitly flag the ambiguity in Section 3, but DO NOT drop the deadline from the header.
 
 RULE 5: HEADER DEADLINE
 In targetDeadline:
-- displayLine1: client wording in short form (e.g. "First week of next month, soft launch").
-- displayLine2: resolved dates with day count relative to createdDate (e.g. "Oct 1 to Oct 7, 2026 (3 to 9 days after the message). Exact date to be confirmed.").
-Use "Not specified by client" only when the message contains no time signal whatsoever. Never write "To be confirmed with client" on Line 1 when the client gave a time expression.
+- clientWording: The exact phrase used by the client (e.g. "about the end of October", "before the middle of October", "launch by Friday"). NEVER set to null if any time hint exists.
+- displayLine1: Client wording in clear short form (e.g. "About the end of October", "First week of next month, soft launch"). NEVER write "Not specified by client" or "To be confirmed with client" on Line 1 when the client gave ANY time expression. Use "Not specified by client" ONLY when the communication contains ZERO time signals of any kind.
+- displayLine2: Resolved dates with day count relative to createdDate (e.g. "Targeting Oct 25 to Oct 31, 2026. Exact launch milestone date to be confirmed during kickoff.").
 
 RULE 6: CLIENT QUESTIONS
 Every question in Section 4 must:
@@ -106,14 +106,32 @@ OUTPUT STRUCTURE (JSON adhering to schema):
 9. outOfScope (Group 1 "Pending client decision", Group 2 "Not mentioned, excluded unless confirmed" max 6)
 10. risks (4 to 8 risks; imperative action; owner)`;
 
+export function getTodayDateInfo(): { dateStr: string; weekdayStr: string } {
+  const now = new Date();
+  const dateStr = now.toISOString().split("T")[0];
+  const weekdayStr = now.toLocaleDateString("en-US", { weekday: "long" });
+  return { dateStr, weekdayStr };
+}
+
+export const DOCUMENT_OCR_TRANSCRIPTION_PROMPT = `You are Briefly's Lead Document & OCR Extraction Specialist.
+Your task is to transcribe and extract all text, messages, requirements, handwriting, headings, bullet points, deadlines, specifications, and client comments from the attached file(s) (PDF or images) VERBATIM.
+
+STRICT INSTRUCTIONS:
+1. Do NOT summarize or condense. Extract the complete textual content verbatim.
+2. Preserve all wording, names, dates, features, numbers, email text, chat messages, and constraints.
+3. If the file is a screenshot of a chat/email, preserve sender names, dates, and the message body.
+4. If multiple pages or files are provided, transcribe each clearly with "--- Page/File [name or number] ---".
+5. Return ONLY the transcribed text in clean Markdown without commentary.`;
+
 export function buildExtractionPrompt(
   sourceText: string,
   projectNameHint?: string,
   createdDateStr?: string,
   weekdayStr?: string
 ): string {
-  const createdDate = createdDateStr || "2026-09-28";
-  const weekday = weekdayStr || "Monday";
+  const today = getTodayDateInfo();
+  const createdDate = createdDateStr || today.dateStr;
+  const weekday = weekdayStr || today.weekdayStr;
 
   return `Analyze the following raw client message and produce a complete, grounded, structured PROJECT BRIEF SPECIFICATION according to the system rules.
 
@@ -127,7 +145,8 @@ ${sourceText}
 """
 
 First extract all atomic facts into the "facts" array with exact verbatim evidence quotes and status (EXPLICIT, CONDITIONAL, IMPLIED).
-Then generate all sections using ONLY those facts and the provided createdDate context. Follow all style prohibitions (no em dashes, no emoji, no banned words, active voice).`;
+Then generate all sections using ONLY those facts and the provided createdDate context. Follow all style prohibitions (no em dashes, no emoji, no banned words, active voice).
+If the client mentioned ANY deadline or timeline expectation (e.g. "about the end of October", "mid-November", "in 3 weeks"), capture it directly in clientWording and displayLine1.`;
 }
 
 export function buildSectionRegenerationPrompt(
@@ -136,7 +155,8 @@ export function buildSectionRegenerationPrompt(
   currentBriefContext: string,
   createdDateStr?: string
 ): string {
-  const createdDate = createdDateStr || "2026-09-28";
+  const today = getTodayDateInfo();
+  const createdDate = createdDateStr || today.dateStr;
 
   return `You are Briefly's Project Intake Specialist.
 Selectively regenerate ONLY the "${section}" section of the project brief, strictly obeying all grounding and style rules (verbatim evidence quotes <= 25 words, no em dashes, no emoji, no banned words).
@@ -175,3 +195,4 @@ Requirements:
 - Do NOT expose internal risk logs or subjective confidence scores.
 - Return the client-ready document directly in Markdown.`;
 }
+

@@ -25,7 +25,13 @@ export interface Fact {
 
 export interface TargetDeadlineInfo {
   clientWording: string | null;
-  milestoneType: "soft_launch" | "full_launch" | "unspecified";
+  milestoneType:
+    | "soft_launch"
+    | "full_launch"
+    | "approximate_target"
+    | "firm_deadline"
+    | "flexible_window"
+    | "unspecified";
   resolvedStart: string | null;
   resolvedEnd: string | null;
   isFirm: boolean | null;
@@ -246,12 +252,11 @@ export interface ProjectBrief {
 }
 
 export function formatStandardDate(dateInput?: string | number | Date | null): string {
-  if (!dateInput) return "Sep 28, 2026";
-  const date = new Date(dateInput);
-  if (isNaN(date.getTime())) return "Sep 28, 2026";
   const months = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
   ];
-  return `${months[date.getUTCMonth()]} ${date.getUTCDate()}, ${date.getUTCFullYear()}`;
+  const date = dateInput ? new Date(dateInput) : new Date();
+  const validDate = isNaN(date.getTime()) ? new Date() : date;
+  return `${months[validDate.getUTCMonth()]} ${validDate.getUTCDate()}, ${validDate.getUTCFullYear()}`;
 }

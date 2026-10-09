@@ -54,6 +54,10 @@ export function BriefView({
   const [showSourceDrawer, setShowSourceDrawer] = useState<boolean>(false);
   const [activeSourceExcerpt, setActiveSourceExcerpt] = useState<string | null>(null);
   const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
+  const [showClientReadyModal, setShowClientReadyModal] = useState<boolean>(false);
+  const [clientReadyText, setClientReadyText] = useState<string>("");
+  const [isLoadingClientReady, setIsLoadingClientReady] = useState<boolean>(false);
+  const [regeneratingSection, setRegeneratingSection] = useState<string | null>(null);
 
   const [prevInitialBrief, setPrevInitialBrief] = useState<ProjectBrief>(initialBrief);
   if (initialBrief !== prevInitialBrief) {
@@ -66,6 +70,69 @@ export function BriefView({
     setBrief(updated);
     saveBrief(updated);
     onUpdateBrief(updated);
+  };
+
+  const handleOpenClientReady = async () => {
+    setShowClientReadyModal(true);
+    if (!clientReadyText) {
+      try {
+        setIsLoadingClientReady(true);
+        const res = await fetch("/api/briefs/client-ready", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ brief }),
+        });
+        const data = await res.json();
+        if (data.markdown) {
+          setClientReadyText(data.markdown);
+        } else {
+          setClientReadyText("Could not generate client-ready text.");
+        }
+      } catch (e) {
+        setClientReadyText("Failed to load client-ready document.");
+      } finally {
+        setIsLoadingClientReady(false);
+      }
+    }
+  };
+
+  const handleRegenerateSection = async (section: "deliverables" | "ambiguities" | "questions" | "risks" | "summary") => {
+    try {
+      setRegeneratingSection(section);
+      showToast(`Regenerating ${section}...`);
+      const res = await fetch("/api/briefs/regenerate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          section,
+          sourceText: brief.source_text,
+          currentBriefContext: JSON.stringify(brief),
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.data) {
+        const updatedBrief: ProjectBrief = { ...brief };
+        if (section === "deliverables" && Array.isArray(data.data.deliverables)) {
+          updatedBrief.structuredDeliverables = data.data.deliverables;
+        } else if (section === "ambiguities" && Array.isArray(data.data.ambiguities)) {
+          updatedBrief.structuredAmbiguities = data.data.ambiguities;
+        } else if (section === "questions" && Array.isArray(data.data.questions)) {
+          updatedBrief.structuredQuestions = data.data.questions;
+        } else if (section === "risks" && Array.isArray(data.data.risks)) {
+          updatedBrief.structuredRisks = data.data.risks;
+        } else if (section === "summary" && data.data.summary) {
+          updatedBrief.executiveSummary = data.data.summary;
+        }
+        handleUpdate(updatedBrief);
+        showToast(`${section.charAt(0).toUpperCase() + section.slice(1)} regenerated!`);
+      } else {
+        showToast("Regeneration returned no changes.", "error");
+      }
+    } catch (e) {
+      showToast(`Failed to regenerate ${section}.`, "error");
+    } finally {
+      setRegeneratingSection(null);
+    }
   };
 
   const handleSaveTitle = () => {
@@ -281,6 +348,15 @@ export function BriefView({
             </button>
 
             <button
+              onClick={handleOpenClientReady}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-lg transition-colors cursor-pointer"
+              title="Generate Client-Ready Kickoff Overview"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Client Brief</span>
+            </button>
+
+            <button
               onClick={handleShareLink}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-lg transition-colors cursor-pointer"
               title="Copy share link"
@@ -325,6 +401,22 @@ export function BriefView({
                 <h1 className="text-2xl sm:text-3xl font-extrabold text-neutral-950 dark:text-white tracking-tight">
                   {brief.title}
                 </h1>
+                {brief.source_files && brief.source_files.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 pt-2">
+                    <span className="text-[10px] font-mono uppercase text-neutral-400 dark:text-neutral-500">
+                      Transcribed Files:
+                    </span>
+                    {brief.source_files.map((f, i) => (
+                      <span
+                        key={i}
+                        className="inline-flex items-center gap-1 text-[11px] font-mono bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 px-2 py-0.5 rounded border border-neutral-200 dark:border-neutral-700"
+                      >
+                        <FileText className="w-3 h-3 text-neutral-500" />
+                        {f.name} ({(f.size / 1024).toFixed(0)} KB)
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="text-right shrink-0">
@@ -743,6 +835,23 @@ export function BriefView({
               </button>
             </div>
 
+            {brief.source_files && brief.source_files.length > 0 && (
+              <div className="space-y-1.5 p-3 rounded-xl bg-neutral-100/70 dark:bg-[#161B24] border border-neutral-200/80 dark:border-neutral-800 text-xs">
+                <span className="font-mono uppercase font-bold text-[10px] text-neutral-400">
+                  Uploaded & Transcribed Attachments ({brief.source_files.length})
+                </span>
+                <div className="space-y-1">
+                  {brief.source_files.map((file, idx) => (
+                    <div key={idx} className="flex items-center gap-2 font-mono text-neutral-700 dark:text-neutral-300">
+                      <FileText className="w-3.5 h-3.5 text-neutral-500" />
+                      <span>{file.name}</span>
+                      <span className="text-[10px] text-neutral-400">({(file.size / 1024).toFixed(0)} KB)</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="text-xs font-mono bg-neutral-50 dark:bg-[#181D28] p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 whitespace-pre-wrap leading-relaxed text-neutral-800 dark:text-neutral-200">
               {brief.source_text}
             </div>
@@ -757,6 +866,48 @@ export function BriefView({
                 </p>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Client-Ready Kickoff Document Modal */}
+      {showClientReadyModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl bg-white dark:bg-[#121620] rounded-2xl shadow-2xl border border-neutral-200 dark:border-neutral-800 overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-[#161B24]">
+              <div className="flex items-center gap-2">
+                <FileText className="w-4 h-4 text-neutral-700 dark:text-neutral-300" />
+                <h3 className="text-sm sm:text-base font-bold text-neutral-950 dark:text-white">
+                  Client-Ready Kickoff Alignment Brief
+                </h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleCopyText(clientReadyText, "Client-Ready Document")}
+                  disabled={isLoadingClientReady || !clientReadyText}
+                  className="px-3 py-1.5 text-xs font-semibold bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 rounded-lg flex items-center gap-1.5 hover:bg-neutral-800 dark:hover:bg-neutral-200 transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy Markdown</span>
+                </button>
+                <button
+                  onClick={() => setShowClientReadyModal(false)}
+                  className="p-1.5 text-neutral-400 hover:text-neutral-700 dark:hover:text-white rounded-lg cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-5 sm:p-6 overflow-y-auto flex-1 text-xs sm:text-sm font-sans leading-relaxed text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap selection:bg-neutral-200 dark:selection:bg-neutral-700">
+              {isLoadingClientReady ? (
+                <div className="py-12 text-center text-neutral-400 font-mono">
+                  Synthesizing client-ready kickoff alignment brief...
+                </div>
+              ) : (
+                clientReadyText
+              )}
+            </div>
           </div>
         </div>
       )}

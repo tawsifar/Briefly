@@ -27,7 +27,16 @@ export const FactSchema = z.object({
 
 export const TargetDeadlineSchema = z.object({
   clientWording: z.string().nullable().default(null),
-  milestoneType: z.enum(["soft_launch", "full_launch", "unspecified"]).default("unspecified"),
+  milestoneType: z
+    .enum([
+      "soft_launch",
+      "full_launch",
+      "approximate_target",
+      "firm_deadline",
+      "flexible_window",
+      "unspecified",
+    ])
+    .default("unspecified"),
   resolvedStart: z.string().nullable().default(null),
   resolvedEnd: z.string().nullable().default(null),
   isFirm: z.boolean().nullable().default(null),
@@ -176,7 +185,17 @@ export const geminiBrieflyResponseSchema = {
       type: Type.OBJECT,
       properties: {
         clientWording: { type: Type.STRING, nullable: true },
-        milestoneType: { type: Type.STRING, enum: ["soft_launch", "full_launch", "unspecified"] },
+        milestoneType: {
+          type: Type.STRING,
+          enum: [
+            "soft_launch",
+            "full_launch",
+            "approximate_target",
+            "firm_deadline",
+            "flexible_window",
+            "unspecified",
+          ],
+        },
         resolvedStart: { type: Type.STRING, nullable: true },
         resolvedEnd: { type: Type.STRING, nullable: true },
         isFirm: { type: Type.BOOLEAN, nullable: true },
