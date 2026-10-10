@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useSyncExternalStore } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -12,8 +12,10 @@ import {
   StructuredRisk,
   formatStandardDate,
 } from "@/lib/types";
-import { getBriefById } from "@/lib/storage";
-import { SAMPLE_ACME_BRIEF } from "@/lib/sample-data";
+import { normalizeBrief } from "@/lib/normalize-brief";
+import { computeClarityBand } from "@/lib/ai/validation";
+import { getStoredBriefs, subscribeToBriefs } from "@/lib/storage";
+import { SAMPLE_ACME_BRIEF, INITIAL_BRIEFS_LIST } from "@/lib/sample-data";
 import { exportBriefToPdf } from "@/lib/export-pdf";
 import {
   CheckCircle2,
@@ -28,12 +30,23 @@ export default function SharePage() {
   const [copied, setCopied] = useState<boolean>(false);
   const [downloading, setDownloading] = useState<boolean>(false);
 
-  const brief = (id ? getBriefById(id) : null) || SAMPLE_ACME_BRIEF;
+  // Only the sample or a brief saved in this browser can be shown; never substitute another brief (BUG-33).
+  // Same hydration-safe store as the main app, so server and client render the same first pass.
+  const stored = useSyncExternalStore(subscribeToBriefs, getStoredBriefs, () => INITIAL_BRIEFS_LIST);
+  const brief = stored.find((b) => b.id === id) ?? (id === SAMPLE_ACME_BRIEF.id ? SAMPLE_ACME_BRIEF : null);
 
   if (!brief) {
     return (
-      <div className="min-h-screen bg-[#FBFBFA] flex items-center justify-center p-4">
-        <div className="w-8 h-8 border-2 border-neutral-900 border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen bg-[#FBFBFA] dark:bg-[#0D1117] flex items-center justify-center p-4">
+        <div className="max-w-md text-center space-y-3">
+          <h1 className="text-lg font-bold text-neutral-950 dark:text-white">Brief not found</h1>
+          <p className="text-sm text-neutral-600 dark:text-neutral-400">
+            This brief is not saved in this browser. Ask the sender to export it as a PDF instead.
+          </p>
+          <Link href="/" className="inline-block text-sm font-semibold underline text-neutral-900 dark:text-white">
+            Go to Briefly
+          </Link>
+        </div>
       </div>
     );
   }
@@ -63,76 +76,12 @@ export default function SharePage() {
 
   const clarityScore = brief.clarityData?.overall ?? brief.scores?.overall ?? 50;
   const clarityBand =
-    brief.clarityData?.band ||
-    (clarityScore >= 85 ? "Ready for kickoff" : clarityScore >= 65 ? "Mostly clear" : "Needs alignment");
+    brief.clarityData?.band || computeClarityBand(clarityScore);
 
-  const deliverables: DeliverableItem[] = brief.structuredDeliverables?.length
-    ? brief.structuredDeliverables
-    : (brief.requirements || []).map((r, i) => ({
-        id: `D${i + 1}`,
-        group: "Pages",
-        label: r.title,
-        description: r.description,
-        evidence: r.source_excerpt || "",
-        tag: r.status === "confirmed" ? "Confirmed" : "Needs scoping",
-      }));
-
-  const ambiguities: StructuredAmbiguity[] = brief.structuredAmbiguities?.length
-    ? brief.structuredAmbiguities
-    : (brief.ambiguities || []).map((a, i) => ({
-        id: `A${i + 1}`,
-        title: a.topic,
-        severity: (a.severity?.toUpperCase() as any) || "MEDIUM",
-        kind: "UNCLEAR",
-        evidence: a.source_excerpt,
-        whatIsUnclear: a.explanation,
-        whyItMatters: "Directly affects kickoff timeline and team capacity.",
-        linkedQuestionId: `Q${i + 1}`,
-        isStandardKickoffItem: false,
-      }));
-
-  const questions: StructuredQuestion[] = brief.structuredQuestions?.length
-    ? brief.structuredQuestions
-    : (brief.questions || []).map((q, i) => ({
-        id: `Q${i + 1}`,
-        text: q.question,
-        rationale: q.reason,
-        linkedAmbiguityId: `A${i + 1}`,
-        priority: i + 1,
-      }));
-
-  const outOfScope: OutOfScopeItem[] = brief.structuredOutOfScope?.length
-    ? brief.structuredOutOfScope
-    : [
-        ...(brief.scope?.possible_future_scope || []).map((item, i) => ({
-          id: `O${i + 1}`,
-          group: "Pending client decision" as const,
-          label: item,
-          reason: "Conditional item pending formal client confirmation.",
-          evidence: null,
-        })),
-        ...(brief.scope?.out_of_scope || []).map((item, i) => ({
-          id: `O_ex_${i + 1}`,
-          group: "Not mentioned, excluded unless confirmed" as const,
-          label: item,
-          reason: "Standard industry boundary excluded unless scoped.",
-          evidence: null,
-        })),
-      ];
+  const { deliverables, ambiguities, questions, outOfScope, risks } = normalizeBrief(brief);
 
   const group1OutOfScope = outOfScope.filter((o) => o.group === "Pending client decision");
   const group2OutOfScope = outOfScope.filter((o) => o.group === "Not mentioned, excluded unless confirmed");
-
-  const risks: StructuredRisk[] = brief.structuredRisks?.length
-    ? brief.structuredRisks
-    : (brief.risks || []).map((r, i) => ({
-        id: `R${i + 1}`,
-        title: r.risk,
-        severity: (r.severity?.toUpperCase() as any) || "MEDIUM",
-        explanation: r.impact,
-        recommendedAction: r.suggested_action,
-        owner: "Agency",
-      }));
 
   const deliverableGroups: Array<"Pages" | "Design and Experience" | "Content and Assets" | "Features"> = [
     "Pages",
@@ -495,6 +444,9 @@ export default function SharePage() {
                       <div className="text-neutral-600 pl-3">{item.reason}</div>
                     </div>
                   ))}
+                  {group2OutOfScope.length === 0 && (
+                    <p className="text-xs text-neutral-400">None flagged.</p>
+                  )}
                 </div>
               </div>
             </div>
@@ -550,7 +502,7 @@ export default function SharePage() {
           {/* Footer note */}
           <div className="pt-6 border-t border-neutral-100 flex items-center justify-between text-xs text-neutral-400 font-mono">
             <span>Briefly Intake Intelligence</span>
-            <span>Quotes verified against client communication</span>
+            <span>{isEvidenceChecked ? "Quotes verified against client communication" : "Some items need review before sharing"}</span>
           </div>
         </div>
       </main>

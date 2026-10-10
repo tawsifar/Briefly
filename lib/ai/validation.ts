@@ -1,3 +1,4 @@
+import { findDeadline, describeWindow } from "./deadline";
 import { BrieflyOutput, DeliverableItem, StructuredAmbiguity, StructuredQuestion, OutOfScopeItem, StructuredRisk } from "../types";
 
 export interface ValidationResult {
@@ -192,7 +193,8 @@ export function validateAndCleanBrief(
 
     // Check that question text does not duplicate inside ambiguities (V6)
     const firstEightWords = words.slice(0, 8).join(" ").toLowerCase();
-    for (const amb of output.ambiguities) {
+    // An empty question would "match" every ambiguity (BUG-16).
+    for (const amb of firstEightWords ? output.ambiguities : []) {
       if (amb.whatIsUnclear.toLowerCase().includes(firstEightWords)) {
         issues.push(`V6: Question text appears inside ambiguity ${amb.id}`);
       }
@@ -222,8 +224,9 @@ export function validateAndCleanBrief(
   if (output.questions.length < 3 || output.questions.length > 10) {
     issues.push(`V8: Question count ${output.questions.length} is outside allowed range (3-10)`);
   }
-  if (output.ambiguities.length < 5 || output.ambiguities.length > 10) {
-    issues.push(`V8: Ambiguity count ${output.ambiguities.length} is outside allowed range (5-10)`);
+  // Same range as prompt Rule 6 (BUG-15)
+  if (output.ambiguities.length < 3 || output.ambiguities.length > 10) {
+    issues.push(`V8: Ambiguity count ${output.ambiguities.length} is outside allowed range (3-10)`);
   }
 
   // V3: Score verification and sum calculation
@@ -251,17 +254,16 @@ export function validateAndCleanBrief(
       targetDeadline.displayLine1 = targetDeadline.clientWording;
     }
   } else if (line1Lower.includes("not specified") || line1Lower.includes("to be confirmed")) {
-    // Scan sourceText for date/timeline keywords that the LLM may have missed
-    const dateMatch = sourceText.match(
-      /(?:(?:the\s+)?deadline(?:\s+is)?|due(?:\s+by)?|launch(?:\s+by)?|target(?:\s+is)?|finish(?:\s+by)?|ready(?:\s+by)?|before|about|around)?\s*(?:the\s+)?(end\s+of\s+[a-z]+|middle\s+of\s+[a-z]+|mid-[a-z]+|beginning\s+of\s+[a-z]+|(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?|\d{1,2}(?:st|nd|rd|th)?\s+of\s+[a-z]+|in\s+\d+\s*(?:weeks?|months?|days?)|next\s+(?:month|week|quarter)|by\s+[a-z]+(?:\s+\d{1,2})?)/i
-    );
-    if (dateMatch && dateMatch[0]) {
-      const recovered = dateMatch[0].trim();
-      targetDeadline.clientWording = recovered;
-      targetDeadline.displayLine1 = recovered.charAt(0).toUpperCase() + recovered.slice(1);
-      targetDeadline.displayLine2 = `Target deadline derived from client message (${recovered}). Exact launch milestone date to be confirmed during kickoff.`;
+    // Scan sourceText for a time expression the LLM may have missed
+    const found = findDeadline(sourceText, createdDateStr);
+    if (found) {
+      targetDeadline.clientWording = found.wording;
+      targetDeadline.displayLine1 = found.wording.charAt(0).toUpperCase() + found.wording.slice(1);
+      targetDeadline.resolvedStart = targetDeadline.resolvedStart ?? found.start;
+      targetDeadline.resolvedEnd = targetDeadline.resolvedEnd ?? found.end;
+      targetDeadline.displayLine2 = describeWindow(found.start, found.end, createdDateStr);
       targetDeadline.milestoneType = "approximate_target";
-      issues.push(`V4: Recovered client deadline wording "${recovered}" from source communication`);
+      issues.push(`V4: Recovered client deadline wording "${found.wording}" from source communication`);
     }
   }
 

@@ -46,6 +46,11 @@ function formatRelativeTime(dateString?: string): string {
   return `Updated ${diffDays} ${diffDays === 1 ? "day" : "days"} ago`;
 }
 
+function greeting(): string {
+  const h = new Date().getHours();
+  return h < 12 ? "GOOD MORNING" : h < 18 ? "GOOD AFTERNOON" : "GOOD EVENING";
+}
+
 export function DashboardView({
   briefs,
   onSelectBrief,
@@ -65,7 +70,7 @@ export function DashboardView({
   const filtered = briefs.filter((b) => {
     const titleMatch = (b.title || "").toLowerCase().includes(searchQuery.toLowerCase());
     const summaryText =
-      b.project?.summary || b.executiveSummary?.paragraph || b.source_text || "";
+      b.executiveSummary?.paragraph || b.project?.summary || b.source_text || "";
     const summaryMatch = summaryText.toLowerCase().includes(searchQuery.toLowerCase());
 
     const isComplete = b.status === "complete" || b.status === "EVIDENCE CHECKED";
@@ -119,7 +124,7 @@ export function DashboardView({
           </div>
 
           <h1 className="text-3xl sm:text-4xl font-extrabold text-neutral-950 dark:text-white tracking-tight uppercase font-sans">
-            {user ? `WELCOME BACK, ${displayName.toUpperCase()}.` : "GOOD MORNING."}
+            {user ? `WELCOME BACK, ${displayName.toUpperCase()}.` : `${greeting()}.`}
           </h1>
           <p className="mt-2 text-base sm:text-lg text-neutral-600 dark:text-neutral-300 font-normal">
             &ldquo;Let&apos;s make the messy parts clear.&rdquo;
@@ -180,7 +185,7 @@ export function DashboardView({
                 : "hover:text-neutral-900 dark:hover:text-white"
             }`}
           >
-            Verified
+            Evidence checked
           </button>
         </div>
       </div>
@@ -192,7 +197,9 @@ export function DashboardView({
             RECENT BRIEFS
           </span>
           <span className="text-[11px] font-mono text-neutral-400 dark:text-neutral-500">
-            {filtered.length} briefs in workspace
+            {filtered.length === briefs.length
+              ? `${briefs.length} ${briefs.length === 1 ? "brief" : "briefs"} in workspace`
+              : `${filtered.length} of ${briefs.length} briefs`}
           </span>
         </div>
 
@@ -219,30 +226,35 @@ export function DashboardView({
         ) : (
           <div className="divide-y divide-neutral-200/80 dark:divide-neutral-800 bg-white dark:bg-[#13161F] rounded-2xl border border-neutral-200/90 dark:border-neutral-800 shadow-2xs overflow-hidden">
             {filtered.map((brief) => {
+              // Structured lists are the current source of truth; legacy arrays go stale after edits (BUG-24).
               const questionCount =
-                brief.questions?.length || brief.structuredQuestions?.length || 0;
+                brief.structuredQuestions?.length ?? brief.questions?.length ?? 0;
               const questionLabel =
                 questionCount === 1 ? "1 question" : `${questionCount} questions`;
 
               const riskCount =
-                brief.risks?.length || brief.structuredRisks?.length || 0;
+                brief.structuredRisks?.length ?? brief.risks?.length ?? 0;
               const riskLabel =
                 riskCount === 0
-                  ? "No critical risks"
+                  ? "No risks flagged"
                   : riskCount === 1
                   ? "1 risk"
                   : `${riskCount} risks`;
 
               const clarityPct =
-                brief.clarityData?.overall || brief.scores?.overall || 85;
+                brief.clarityData?.overall ?? brief.scores?.overall ?? 0;
               const timeString = formatRelativeTime(brief.updated_at);
               const isComplete =
                 brief.status === "complete" || brief.status === "EVIDENCE CHECKED";
 
               const summaryText =
-                brief.project?.summary ||
                 brief.executiveSummary?.paragraph ||
-                (brief.source_text ? brief.source_text.slice(0, 140) + "..." : "No summary available.");
+                brief.project?.summary ||
+                (brief.source_text
+                  ? brief.source_text.length > 140
+                    ? `${brief.source_text.slice(0, 140)}...`
+                    : brief.source_text
+                  : "No summary available.");
 
               return (
                 <div
@@ -263,7 +275,7 @@ export function DashboardView({
                             : "bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800"
                         }`}
                       >
-                        {isComplete ? "Verified" : "Needs Review"}
+                        {isComplete ? "Evidence checked" : "Needs Review"}
                       </span>
                     </div>
 

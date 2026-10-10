@@ -10,6 +10,8 @@ import {
   StructuredRisk,
   formatStandardDate,
 } from "@/lib/types";
+import { normalizeBrief } from "@/lib/normalize-brief";
+import { computeClarityBand } from "@/lib/ai/validation";
 import { useToast } from "@/components/ui/toast";
 import { saveBrief } from "@/lib/storage";
 import { exportBriefToPdf } from "@/lib/export-pdf";
@@ -64,6 +66,7 @@ export function BriefView({
     setPrevInitialBrief(initialBrief);
     setBrief(initialBrief);
     setTitleInput(initialBrief.title);
+    if (initialBrief.id !== prevInitialBrief.id) setClientReadyText(""); // BUG-30: no stale text from another brief
   }
 
   const handleUpdate = (updated: ProjectBrief) => {
@@ -107,9 +110,14 @@ export function BriefView({
           section,
           sourceText: brief.source_text,
           currentBriefContext: JSON.stringify(brief),
+          createdDate: brief.created_at?.slice(0, 10),
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(data.error || `Failed to regenerate ${section}.`, "error");
+        return;
+      }
       if (data.success && data.data) {
         const updatedBrief: ProjectBrief = { ...brief };
         if (section === "deliverables" && Array.isArray(data.data.deliverables)) {
@@ -159,7 +167,6 @@ export function BriefView({
   };
 
   const handleCopyAllQuestions = () => {
-    const questions = brief.structuredQuestions || [];
     if (questions.length === 0) return;
     const formatted = questions
       .map((q) => `${q.id}: ${q.text}\n   Rationale: ${q.rationale}`)
@@ -199,83 +206,14 @@ export function BriefView({
 
   const clarityScore = brief.clarityData?.overall ?? brief.scores?.overall ?? 50;
   const clarityBand =
-    brief.clarityData?.band ||
-    (clarityScore >= 85 ? "Ready for kickoff" : clarityScore >= 65 ? "Mostly clear" : "Needs alignment");
+    brief.clarityData?.band || computeClarityBand(clarityScore);
 
-  // Normalized list of deliverables
-  const deliverables: DeliverableItem[] = brief.structuredDeliverables?.length
-    ? brief.structuredDeliverables
-    : (brief.requirements || []).map((r, i) => ({
-        id: `D${i + 1}`,
-        group: "Pages",
-        label: r.title,
-        description: r.description,
-        evidence: r.source_excerpt || "",
-        tag: r.status === "confirmed" ? "Confirmed" : "Needs scoping",
-      }));
-
-  // Normalized ambiguities
-  const ambiguities: StructuredAmbiguity[] = brief.structuredAmbiguities?.length
-    ? brief.structuredAmbiguities
-    : (brief.ambiguities || []).map((a, i) => ({
-        id: `A${i + 1}`,
-        title: a.topic,
-        severity: (a.severity?.toUpperCase() as any) || "MEDIUM",
-        kind: "UNCLEAR",
-        evidence: a.source_excerpt,
-        whatIsUnclear: a.explanation,
-        whyItMatters: "Directly affects kickoff timeline and team capacity.",
-        linkedQuestionId: `Q${i + 1}`,
-        isStandardKickoffItem: false,
-      }));
-
-  // Normalized questions
-  const questions: StructuredQuestion[] = brief.structuredQuestions?.length
-    ? brief.structuredQuestions
-    : (brief.questions || []).map((q, i) => ({
-        id: `Q${i + 1}`,
-        text: q.question,
-        rationale: q.reason,
-        linkedAmbiguityId: `A${i + 1}`,
-        priority: i + 1,
-      }));
-
-  // Normalized outOfScope
-  const outOfScope: OutOfScopeItem[] = brief.structuredOutOfScope?.length
-    ? brief.structuredOutOfScope
-    : [
-        ...(brief.scope?.possible_future_scope || []).map((item, i) => ({
-          id: `O${i + 1}`,
-          group: "Pending client decision" as const,
-          label: item,
-          reason: "Conditional item pending formal client confirmation.",
-          evidence: null,
-        })),
-        ...(brief.scope?.out_of_scope || []).map((item, i) => ({
-          id: `O_ex_${i + 1}`,
-          group: "Not mentioned, excluded unless confirmed" as const,
-          label: item,
-          reason: "Standard industry boundary excluded unless scoped.",
-          evidence: null,
-        })),
-      ];
+  // One shared mapping for structured and legacy briefs (BUG-32)
+  const { deliverables, ambiguities, questions, outOfScope, risks } = normalizeBrief(brief);
 
   const group1OutOfScope = outOfScope.filter((o) => o.group === "Pending client decision");
   const group2OutOfScope = outOfScope.filter((o) => o.group === "Not mentioned, excluded unless confirmed");
 
-  // Normalized risks
-  const risks: StructuredRisk[] = brief.structuredRisks?.length
-    ? brief.structuredRisks
-    : (brief.risks || []).map((r, i) => ({
-        id: `R${i + 1}`,
-        title: r.risk,
-        severity: (r.severity?.toUpperCase() as any) || "MEDIUM",
-        explanation: r.impact,
-        recommendedAction: r.suggested_action,
-        owner: "Agency",
-      }));
-
-  // Deliverable groups
   const deliverableGroups: Array<"Pages" | "Design and Experience" | "Content and Assets" | "Features"> = [
     "Pages",
     "Design and Experience",
@@ -432,6 +370,11 @@ export function BriefView({
                 <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-1 max-w-xs">
                   Quotes checked against the client message. Not yet confirmed with the client.
                 </p>
+                {brief.generated_by === "fallback" && (
+                  <p className="text-[11px] text-amber-700 dark:text-amber-300 mt-1 max-w-xs">
+                    {brief.generation_note || "Built by the offline parser because the AI service was unavailable. Review before sharing."}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -755,6 +698,9 @@ export function BriefView({
                       </div>
                     </div>
                   ))}
+                  {group2OutOfScope.length === 0 && (
+                    <p className="text-xs text-neutral-400">None flagged.</p>
+                  )}
                 </div>
               </div>
             </div>
@@ -814,7 +760,7 @@ export function BriefView({
           {/* Footer note */}
           <div className="pt-6 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between text-xs text-neutral-400 font-mono">
             <span>Briefly Intake Intelligence</span>
-            <span>Quotes verified against client communication</span>
+            <span>{isEvidenceChecked ? "Quotes verified against client communication" : "Some items need review before sharing"}</span>
           </div>
         </div>
       </div>

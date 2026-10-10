@@ -1,4 +1,6 @@
 import { jsPDF } from "jspdf";
+import { computeClarityBand } from "./ai/validation";
+import { normalizeBrief } from "./normalize-brief";
 import { ProjectBrief, formatStandardDate } from "./types";
 
 export function exportBriefToPdf(brief: ProjectBrief) {
@@ -14,6 +16,7 @@ export function exportBriefToPdf(brief: ProjectBrief) {
   const contentWidth = pageWidth - margin * 2;
   let y = margin;
 
+  const { deliverables, ambiguities, questions, outOfScope, risks } = normalizeBrief(brief);
   const createdDateStr = brief.createdDateFormatted || formatStandardDate(brief.created_at);
 
   const drawPageHeader = () => {
@@ -85,6 +88,12 @@ export function exportBriefToPdf(brief: ProjectBrief) {
     { align: "right" }
   );
 
+  if (brief.generated_by === "fallback") {
+    y += 3.5;
+    doc.setTextColor(180, 83, 9);
+    doc.text("Built by the offline parser (AI unavailable). Review before sharing.", pageWidth - margin, y, { align: "right" });
+  }
+
   y += 4;
 
   // Project Title
@@ -102,10 +111,18 @@ export function exportBriefToPdf(brief: ProjectBrief) {
   const line2 = targetDeadline?.displayLine2 || "Target dates to be confirmed during kickoff.";
 
   const clarityScore = brief.clarityData?.overall ?? brief.scores?.overall ?? 50;
-  const clarityBand = brief.clarityData?.band || (clarityScore >= 85 ? "Ready for kickoff" : clarityScore >= 65 ? "Mostly clear" : "Needs alignment");
+  const clarityBand = brief.clarityData?.band || computeClarityBand(clarityScore);
 
   const boxWidth = (contentWidth - 6) / 3;
-  const boxHeight = 17;
+  // Wrap deadline text instead of cutting it at one line (BUG-31); boxes grow to fit.
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8.5);
+  const line1Split: string[] = doc.splitTextToSize(line1, boxWidth - 6).slice(0, 2);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.5);
+  const line2Split: string[] = doc.splitTextToSize(line2, boxWidth - 6).slice(0, 3);
+  const line2Y = 9.5 + (line1Split.length - 1) * 3.6 + 4.5;
+  const boxHeight = Math.max(17, line2Y + (line2Split.length - 1) * 2.8 + 3);
 
   // Box 1: TARGET DEADLINE
   doc.setFillColor(248, 250, 252);
@@ -118,13 +135,11 @@ export function exportBriefToPdf(brief: ProjectBrief) {
   doc.setFont("helvetica", "bold");
   doc.setFontSize(8.5);
   doc.setTextColor(15, 23, 42);
-  const line1Split = doc.splitTextToSize(line1, boxWidth - 6);
-  doc.text(line1Split[0] || line1, margin + 3.5, y + 9.5);
+  doc.text(line1Split, margin + 3.5, y + 9.5, { lineHeightFactor: 1.2 });
   doc.setFont("helvetica", "normal");
   doc.setFontSize(6.5);
   doc.setTextColor(100, 116, 139);
-  const line2Split = doc.splitTextToSize(line2, boxWidth - 6);
-  doc.text(line2Split[0] || line2, margin + 3.5, y + 14);
+  doc.text(line2Split, margin + 3.5, y + line2Y, { lineHeightFactor: 1.2 });
 
   // Box 2: CLARITY SCORE
   const box2X = margin + boxWidth + 3;
@@ -201,12 +216,16 @@ export function exportBriefToPdf(brief: ProjectBrief) {
     checkPageBreak(20);
     const gridCols = 2;
     const colW = (contentWidth - 4) / gridCols;
-    const rowH = 9;
 
     for (let i = 0; i < keyFacts.length; i += 2) {
-      checkPageBreak(rowH + 2);
       const fact1 = keyFacts[i];
       const fact2 = keyFacts[i + 1];
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      const val1Lines: string[] = doc.splitTextToSize(fact1.value, colW - 6).slice(0, 2);
+      const val2Lines: string[] = fact2 ? doc.splitTextToSize(fact2.value, colW - 6).slice(0, 2) : [];
+      const rowH = Math.max(val1Lines.length, val2Lines.length) > 1 ? 12 : 9;
+      checkPageBreak(rowH + 2);
 
       doc.setFillColor(250, 250, 250);
       doc.setDrawColor(230, 230, 230);
@@ -218,8 +237,7 @@ export function exportBriefToPdf(brief: ProjectBrief) {
       doc.setFont("helvetica", "normal");
       doc.setFontSize(7.5);
       doc.setTextColor(31, 41, 55);
-      const val1Lines = doc.splitTextToSize(fact1.value, colW - 6);
-      doc.text(val1Lines[0] || fact1.value, margin + 3, y + 7);
+      doc.text(val1Lines, margin + 3, y + 7, { lineHeightFactor: 1.2 });
 
       if (fact2) {
         const x2 = margin + colW + 4;
@@ -233,8 +251,7 @@ export function exportBriefToPdf(brief: ProjectBrief) {
         doc.setFont("helvetica", "normal");
         doc.setFontSize(7.5);
         doc.setTextColor(31, 41, 55);
-        const val2Lines = doc.splitTextToSize(fact2.value, colW - 6);
-        doc.text(val2Lines[0] || fact2.value, x2 + 3, y + 7);
+        doc.text(val2Lines, x2 + 3, y + 7, { lineHeightFactor: 1.2 });
       }
       y += rowH + 2;
     }
@@ -252,7 +269,6 @@ export function exportBriefToPdf(brief: ProjectBrief) {
   doc.text("2. Confirmed Deliverables (In-Scope)", margin, y);
   y += 6;
 
-  const deliverables = brief.structuredDeliverables || [];
   if (deliverables.length === 0) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8.5);
@@ -348,7 +364,6 @@ export function exportBriefToPdf(brief: ProjectBrief) {
   doc.text("3. Flagged Ambiguities (Requires Alignment)", margin, y);
   y += 6;
 
-  const ambiguities = brief.structuredAmbiguities || [];
   if (ambiguities.length === 0) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8.5);
@@ -455,7 +470,6 @@ export function exportBriefToPdf(brief: ProjectBrief) {
   doc.text("4. Ready-to-Send Client Questions", margin, y);
   y += 6;
 
-  const questions = brief.structuredQuestions || [];
   if (questions.length === 0) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8.5);
@@ -506,7 +520,6 @@ export function exportBriefToPdf(brief: ProjectBrief) {
   doc.text("5. Out of Scope / Phase 2 Defers", margin, y);
   y += 6;
 
-  const outOfScope = brief.structuredOutOfScope || [];
   const group1 = outOfScope.filter((o) => o.group === "Pending client decision");
   const group2 = outOfScope.filter((o) => o.group === "Not mentioned, excluded unless confirmed");
 
@@ -581,7 +594,6 @@ export function exportBriefToPdf(brief: ProjectBrief) {
   doc.text("6. Project Delivery Risks & Recommendations", margin, y);
   y += 6;
 
-  const risks = brief.structuredRisks || [];
   if (risks.length === 0) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8.5);

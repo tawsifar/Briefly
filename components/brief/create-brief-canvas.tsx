@@ -68,6 +68,11 @@ export function CreateBriefCanvas({ onBriefGenerated, onCancel }: CreateBriefCan
     if (!uploaded || uploaded.length === 0) return;
 
     Array.from(uploaded).forEach((file) => {
+      // Word files are ZIP archives; reading them as text pastes binary junk (BUG-34).
+      if (/\.docx?$/i.test(file.name) || file.type.includes("officedocument") || file.type === "application/msword") {
+        showToast(`${file.name}: Word files are not supported yet. Save it as PDF or paste the text.`, "error");
+        return;
+      }
       const reader = new FileReader();
       reader.onload = () => {
         const base64 = typeof reader.result === "string" ? reader.result.split(",")[1] : undefined;
@@ -123,7 +128,10 @@ export function CreateBriefCanvas({ onBriefGenerated, onCancel }: CreateBriefCan
     }, 850);
 
     const now = new Date();
-    const createdDate = now.toISOString().split("T")[0];
+    // Local calendar day, so it matches the local weekday below.
+    const createdDate = [now.getFullYear(), now.getMonth() + 1, now.getDate()]
+      .map((n) => String(n).padStart(2, "0"))
+      .join("-");
     const weekday = now.toLocaleDateString("en-US", { weekday: "long" });
 
     try {
@@ -147,8 +155,9 @@ export function CreateBriefCanvas({ onBriefGenerated, onCancel }: CreateBriefCan
       clearInterval(interval);
 
       if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "Failed to analyze brief.");
+        // Error pages (413/504) may be HTML, not JSON (BUG-22).
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Failed to analyze brief (HTTP ${res.status}).`);
       }
 
       const data = await res.json();
@@ -242,7 +251,7 @@ export function CreateBriefCanvas({ onBriefGenerated, onCancel }: CreateBriefCan
           </div>
 
           <div className="text-xs text-neutral-400 dark:text-neutral-500 font-mono">
-            Accepts PDF, DOCX, TXT, MD, PNG, JPG, WEBP
+            Accepts PDF, TXT, MD, PNG, JPG, WEBP
           </div>
         </div>
 
@@ -285,7 +294,7 @@ export function CreateBriefCanvas({ onBriefGenerated, onCancel }: CreateBriefCan
                 </h4>
                 <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-sm mx-auto">
                   {activeTab === "file"
-                    ? "Accepts PDF, DOCX, TXT, MD"
+                    ? "Accepts PDF, TXT, MD"
                     : "Accepts PNG, JPG, WEBP. AI inspects text and visual layout."}
                 </p>
                 <input
@@ -294,7 +303,7 @@ export function CreateBriefCanvas({ onBriefGenerated, onCancel }: CreateBriefCan
                   multiple
                   accept={
                     activeTab === "file"
-                      ? ".pdf,.docx,.txt,.md,text/*"
+                      ? ".pdf,.txt,.md,text/*"
                       : "image/png,image/jpeg,image/webp"
                   }
                   onChange={handleFileUpload}

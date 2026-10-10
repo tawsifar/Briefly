@@ -1,5 +1,15 @@
 import { getGeminiClient, getModelName } from "./gemini";
-import { geminiBrieflyResponseSchema, BrieflyOutputParsed, BrieflyOutputSchema } from "./schema";
+import { z } from "zod";
+import {
+  geminiBrieflyResponseSchema,
+  BrieflyOutputSchema,
+  DeliverableItemSchema,
+  AmbiguityItemSchema,
+  QuestionItemSchema,
+  RiskItemSchema,
+  SummarySectionSchema,
+  OutOfScopeItemSchema,
+} from "./schema";
 import {
   SYSTEM_INTAKE_ANALYST_PROMPT,
   DOCUMENT_OCR_TRANSCRIPTION_PROMPT,
@@ -9,7 +19,11 @@ import {
   BRIEFLY_PROMPT_VERSION,
   getTodayDateInfo,
 } from "./prompts";
-import { validateAndCleanBrief, computeClarityBand, ValidationResult } from "./validation";
+import { validateAndCleanBrief, computeClarityBand, ValidationResult, sanitizeStyleText, isSubstringOfSource } from "./validation";
+import { normalizeBrief } from "../normalize-brief";
+import { generateGroundedFallback } from "./fallback";
+
+export { generateGroundedFallback };
 import {
   ProjectBrief,
   BrieflyOutput,
@@ -114,9 +128,12 @@ export async function generateBrief(input: GenerateBriefInput): Promise<{
   let rawOutput: BrieflyOutput;
 
   const apiKey = process.env.GEMINI_API_KEY;
+  // Why the offline generator was used, if it was. Shown on the brief (BUG-14).
+  let fallbackReason: string | null = null;
 
   if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
     console.warn("GEMINI_API_KEY not configured. Using grounded deterministic extraction.");
+    fallbackReason = "GEMINI_API_KEY is not set on the server";
     rawOutput = generateGroundedFallback(sourceText, input.projectNameHint, createdDateStr, weekdayStr);
   } else {
     try {
@@ -162,19 +179,29 @@ export async function generateBrief(input: GenerateBriefInput): Promise<{
       rawOutput = BrieflyOutputSchema.parse(parsedJson) as BrieflyOutput;
     } catch (error) {
       console.error("Gemini API call failed, falling back to grounded parser:", error);
+      fallbackReason = `the Gemini request failed (${error instanceof Error ? error.message.slice(0, 160) : "unknown error"})`;
       rawOutput = generateGroundedFallback(sourceText, input.projectNameHint, createdDateStr, weekdayStr);
     }
   }
 
   // Run through V1 to V9 validation pipeline
   const validation = validateAndCleanBrief(rawOutput, sourceText, createdDateStr);
+  const generationNote = fallbackReason
+    ? `Built by Briefly's offline parser because ${fallbackReason}. Review before sharing.`
+    : undefined;
+  if (generationNote) {
+    validation.issues.unshift(generationNote);
+    validation.isValid = false;
+    validation.status = "NEEDS REVIEW";
+  }
   const cleanOutput = validation.output;
 
   // Compute total score and band in code
   const totalScore = cleanOutput.clarity.dimensions.reduce((acc, d) => acc + d.score, 0);
   const clarityBand = computeClarityBand(totalScore);
 
-  const briefId = `brief_${Date.now().toString(36).substring(0, 6)}`;
+  // Full timestamp plus random suffix: unique even for briefs built in the same second (BUG-18).
+  const briefId = `brief_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const nowIso = new Date().toISOString();
   const createdDateFormatted = formatStandardDate(createdDateStr);
 
@@ -207,6 +234,8 @@ export async function generateBrief(input: GenerateBriefInput): Promise<{
     structuredRisks: cleanOutput.risks,
     facts: cleanOutput.facts,
     validationIssues: validation.issues,
+    generated_by: fallbackReason ? "fallback" : "ai",
+    generation_note: generationNote,
 
     // Legacy fields mapped for backward compatibility
     project: {
@@ -274,10 +303,11 @@ export async function generateBrief(input: GenerateBriefInput): Promise<{
     })),
     scores: {
       overall: totalScore,
-      scope_clarity: Math.round((cleanOutput.clarity.dimensions[1]?.score || 14) * 5),
-      timeline_clarity: Math.round((cleanOutput.clarity.dimensions[2]?.score || 9) * 6.6),
-      requirements_clarity: Math.round((cleanOutput.clarity.dimensions[0]?.score || 9) * 6.6),
-      dependency_clarity: Math.round((cleanOutput.clarity.dimensions[5]?.score || 6) * 5),
+      // ?? not ||: a real score of 0 must stay 0 (BUG-17)
+      scope_clarity: Math.round((cleanOutput.clarity.dimensions[1]?.score ?? 0) * 5),
+      timeline_clarity: Math.round(((cleanOutput.clarity.dimensions[2]?.score ?? 0) * 100) / 15),
+      requirements_clarity: Math.round(((cleanOutput.clarity.dimensions[0]?.score ?? 0) * 100) / 15),
+      dependency_clarity: Math.round((cleanOutput.clarity.dimensions[5]?.score ?? 0) * 5),
       calculation_note: `Calculated sum of 6 clarity dimensions: ${totalScore}/100 (${clarityBand})`,
     },
   };
@@ -768,323 +798,52 @@ export function getReferenceAirbnbBrief(
   };
 }
 
-// Grounded parser for inputs if API key is not present or Gemini fails
-export function generateGroundedFallback(
-  sourceText: string,
-  projectNameHint?: string,
-  createdDateStr?: string,
-  weekdayStr?: string
-): BrieflyOutput {
-  const today = getTodayDateInfo();
-  const activeDateStr = createdDateStr || today.dateStr;
+type RegenSection = "questions" | "summary" | "scope" | "risks" | "next_steps" | "deliverables" | "ambiguities";
 
-  // 1. Detect any deadline or temporal references in sourceText
-  const dateMatch = sourceText.match(
-    /(?:(?:the\s+)?deadline(?:\s+is)?|due(?:\s+by)?|launch(?:\s+by)?|target(?:\s+is)?|finish(?:\s+by)?|ready(?:\s+by)?|before|about|around)?\s*(?:the\s+)?(end\s+of\s+[a-z]+|middle\s+of\s+[a-z]+|mid-[a-z]+|beginning\s+of\s+[a-z]+|(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?|\d{1,2}(?:st|nd|rd|th)?\s+of\s+[a-z]+|in\s+\d+\s*(?:weeks?|months?|days?)|next\s+(?:month|week|quarter)|by\s+[a-z]+(?:\s+\d{1,2})?)/i
-  );
+// Output key and Zod shape per section, reusing the main schema (BUG-20).
+const SECTION_SCHEMAS: Record<RegenSection, { key: string; schema: z.ZodTypeAny }> = {
+  deliverables: { key: "deliverables", schema: z.array(DeliverableItemSchema) },
+  ambiguities: { key: "ambiguities", schema: z.array(AmbiguityItemSchema) },
+  questions: { key: "questions", schema: z.array(QuestionItemSchema) },
+  risks: { key: "risks", schema: z.array(RiskItemSchema) },
+  summary: { key: "summary", schema: SummarySectionSchema },
+  scope: { key: "outOfScope", schema: z.array(OutOfScopeItemSchema) },
+  next_steps: { key: "next_steps", schema: z.array(z.object({ id: z.string(), step: z.string(), priority: z.enum(["high", "medium", "low"]) })) },
+};
 
-  let targetDeadline: TargetDeadlineInfo;
-  if (dateMatch && dateMatch[0]) {
-    const rawDatePhrase = dateMatch[0].trim();
-    const cleanLine1 = rawDatePhrase.charAt(0).toUpperCase() + rawDatePhrase.slice(1);
-    targetDeadline = {
-      clientWording: rawDatePhrase,
-      milestoneType: "approximate_target",
-      resolvedStart: null,
-      resolvedEnd: null,
-      isFirm: false,
-      displayLine1: cleanLine1,
-      displayLine2: `Target timeline derived from client message (${rawDatePhrase}). Specific launch milestone to be confirmed during kickoff.`,
-    };
-  } else {
-    targetDeadline = {
-      clientWording: null,
-      milestoneType: "unspecified",
-      resolvedStart: null,
-      resolvedEnd: null,
-      isFirm: null,
-      displayLine1: "Not specified by client",
-      displayLine2: "Target milestone date to be determined during kickoff.",
-    };
+export type RegenerateResult = { ok: true; data: Record<string, unknown> } | { ok: false; status: number; error: string };
+
+/** Sanitize every string, and drop list items whose evidence quote is not in the source. */
+function cleanRegenerated(value: unknown, sourceText: string): unknown {
+  if (typeof value === "string") return sanitizeStyleText(value);
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => !(item && typeof item === "object" && typeof (item as { evidence?: unknown }).evidence === "string" && !isSubstringOfSource((item as { evidence: string }).evidence, sourceText)))
+      .map((item) => cleanRegenerated(item, sourceText));
   }
-
-  // 2. Break sourceText into sentences/clauses for grounded fact & deliverable extraction
-  const rawSentences = sourceText
-    .split(/(?<=[.?!:\n])\s+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 8);
-
-  const facts: Fact[] = [];
-  const deliverables: DeliverableItem[] = [];
-
-  const candidateSentences = rawSentences.length > 0 ? rawSentences : [sourceText.slice(0, 100)];
-
-  candidateSentences.slice(0, 6).forEach((sentence, idx) => {
-    const factId = `F${idx + 1}`;
-    let category: Fact["category"] = "goal";
-    const lower = sentence.toLowerCase();
-
-    if (lower.includes("page") || lower.includes("home") || lower.includes("about") || lower.includes("contact")) {
-      category = "page";
-    } else if (lower.includes("design") || lower.includes("vibe") || lower.includes("style") || lower.includes("dark") || lower.includes("look")) {
-      category = "design";
-    } else if (lower.includes("deadline") || lower.includes("month") || lower.includes("october") || lower.includes("november") || lower.includes("week")) {
-      category = "timeline";
-    } else if (lower.includes("portal") || lower.includes("feature") || lower.includes("chat") || lower.includes("app") || lower.includes("integration")) {
-      category = "feature";
-    }
-
-    const excerpt = sentence.length > 100 ? sentence.slice(0, 95) + "..." : sentence;
-
-    facts.push({
-      id: factId,
-      category,
-      statement: `The client mentioned: "${excerpt}"`,
-      evidence: excerpt,
-      status: lower.includes("maybe") || lower.includes("if") || lower.includes("could") ? "CONDITIONAL" : "EXPLICIT",
-    });
-
-    // Deliverable derivation
-    if (category === "page" || category === "feature" || category === "goal" || category === "design") {
-      let group: DeliverableItem["group"] = "Pages";
-      if (category === "design") group = "Design and Experience";
-      if (category === "feature") group = "Features";
-
-      deliverables.push({
-        id: `D${deliverables.length + 1}`,
-        factId,
-        group,
-        label: category === "page" ? "Identified page requirements" : category === "design" ? "Aesthetic & styling guidelines" : "Core functional scope",
-        description: sentence,
-        evidence: excerpt,
-        tag: lower.includes("maybe") || lower.includes("if") ? "Needs scoping" : "Confirmed",
-      });
-    }
-  });
-
-  // Ensure at least 1-2 deliverables exist
-  if (deliverables.length === 0) {
-    const firstSentence = candidateSentences[0] || sourceText.slice(0, 60);
-    deliverables.push({
-      id: "D1",
-      factId: "F1",
-      group: "Pages",
-      label: "Initial client deliverable",
-      description: firstSentence,
-      evidence: firstSentence.slice(0, 80),
-      tag: "Confirmed",
-    });
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, cleanRegenerated(v, sourceText)]));
   }
-
-  // 3. Project title
-  let projectTitle = projectNameHint;
-  if (!projectTitle) {
-    const firstWords = candidateSentences[0]?.split(/\s+/).slice(0, 5).join(" ") || "Client Project";
-    projectTitle = `${firstWords} Intake Specification`.replace(/[^\w\s-]/g, "");
-  }
-
-  // 4. Clarity dimensions
-  const hasTimeline = targetDeadline.milestoneType !== "unspecified";
-  const clarity = {
-    dimensions: [
-      { key: "goal_and_context", label: "Goal and business context", score: 10, max: 15, justification: "Core project request identified from communication." },
-      { key: "scope_and_deliverables", label: "Scope and deliverables", score: Math.min(18, Math.max(10, deliverables.length * 4)), max: 20, justification: `${deliverables.length} deliverable areas isolated.` },
-      { key: "timeline_and_deadline", label: "Timeline and deadline", score: hasTimeline ? 12 : 5, max: 15, justification: hasTimeline ? "Target milestone deadline expressed." : "No specific completion date given." },
-      { key: "content_and_assets", label: "Content and asset readiness", score: 8, max: 15, justification: "Content status to be finalized at kickoff." },
-      { key: "design_direction", label: "Design direction", score: 9, max: 15, justification: "Initial styling cues captured." },
-      { key: "technical_and_integration", label: "Technical and integration definition", score: 10, max: 20, justification: "Platform details to be scoped." },
-    ],
-  };
-
-  // 5. Summary
-  const summary = {
-    goal: candidateSentences[0] || "Review and structure client requirements before kickoff.",
-    paragraph: `The client provided initial specifications regarding their project. Core goals, deliverables, and preliminary timelines (${targetDeadline.displayLine1}) have been organized into a grounded specification to establish mutual scope before commencing work.`,
-    keyFacts: [
-      { label: "Target timeline", value: targetDeadline.displayLine1 },
-      { label: "Source length", value: `${sourceText.length} characters` },
-      { label: "Extracted requirements", value: `${deliverables.length} deliverables` },
-    ],
-  };
-
-  // 6. Ambiguities & Questions
-  const ambiguities: StructuredAmbiguity[] = [
-    {
-      id: "A1",
-      title: "Launch milestone cutoff dates",
-      severity: hasTimeline ? "MEDIUM" : "HIGH",
-      kind: hasTimeline ? "UNCLEAR" : "MISSING",
-      evidence: hasTimeline ? targetDeadline.clientWording : null,
-      whatIsUnclear: hasTimeline ? `The client indicated "${targetDeadline.clientWording}" but exact staging and production launch cutoffs need agreement.` : "The message does not mention a required completion or launch date.",
-      whyItMatters: "Fixed calendar cutoffs prevent resource scheduling conflicts.",
-      linkedQuestionId: "Q1",
-      isStandardKickoffItem: false,
-    },
-    {
-      id: "A2",
-      title: "Content readiness and asset handoff",
-      severity: "MEDIUM",
-      kind: "MISSING",
-      evidence: null,
-      whatIsUnclear: "The message does not mention whether copy and graphics are ready.",
-      whyItMatters: "Missing content stalls development progress.",
-      linkedQuestionId: "Q2",
-      isStandardKickoffItem: false,
-    },
-    {
-      id: "A3",
-      title: "Visual design preferences",
-      severity: "MEDIUM",
-      kind: "MISSING",
-      evidence: null,
-      whatIsUnclear: "The message does not mention style guides or website references.",
-      whyItMatters: "Aligns artistic direction before wireframes begin.",
-      linkedQuestionId: "Q3",
-      isStandardKickoffItem: false,
-    },
-    {
-      id: "A4",
-      title: "Stakeholder approval contact",
-      severity: "LOW",
-      kind: "MISSING",
-      evidence: null,
-      whatIsUnclear: "The message does not mention who provides final approvals.",
-      whyItMatters: "Clarifies review hierarchy and prevents conflicting feedback.",
-      linkedQuestionId: "Q4",
-      isStandardKickoffItem: true,
-    },
-    {
-      id: "A5",
-      title: "Budget parameters",
-      severity: "LOW",
-      kind: "MISSING",
-      evidence: null,
-      whatIsUnclear: "The message does not mention the allocated project budget.",
-      whyItMatters: "Ensures technical architecture matches financial expectations.",
-      linkedQuestionId: "Q5",
-      isStandardKickoffItem: true,
-    },
-  ];
-
-  const questions: StructuredQuestion[] = [
-    {
-      id: "Q1",
-      text: hasTimeline ? `What exact calendar date are you targeting for final launch, following your "${targetDeadline.clientWording}" milestone?` : "What target launch date are you aiming for with this project?",
-      rationale: "Establishes a firm delivery calendar.",
-      linkedAmbiguityId: "A1",
-      priority: 1,
-    },
-    {
-      id: "Q2",
-      text: "Do you have finalized text and imagery ready, or will you need copywriting assistance?",
-      rationale: "Plans asset workflow and design handoffs.",
-      linkedAmbiguityId: "A2",
-      priority: 2,
-    },
-    {
-      id: "Q3",
-      text: "Could you share two or three website references that reflect your preferred aesthetic?",
-      rationale: "Guides design visual direction.",
-      linkedAmbiguityId: "A3",
-      priority: 3,
-    },
-    {
-      id: "Q4",
-      text: "Who from your team will be the primary contact for design review approvals?",
-      rationale: "Directs deliverables to the responsible decision-maker.",
-      linkedAmbiguityId: "A4",
-      priority: 4,
-    },
-    {
-      id: "Q5",
-      text: "Is there a predetermined budget range for this phase of the project?",
-      rationale: "Aligns technical scope to budget constraints.",
-      linkedAmbiguityId: "A5",
-      priority: 5,
-    },
-  ];
-
-  // 7. Out of Scope
-  const outOfScope: OutOfScopeItem[] = [
-    {
-      id: "O1",
-      group: "Not mentioned, excluded unless confirmed",
-      label: "Content writing and copywriting",
-      reason: "Client provides all finalized copy unless copywriting services are formally added.",
-      evidence: null,
-    },
-    {
-      id: "O2",
-      group: "Not mentioned, excluded unless confirmed",
-      label: "Custom hosting infrastructure management",
-      reason: "Hosting and cloud domains remain client-managed unless otherwise scoped.",
-      evidence: null,
-    },
-  ];
-
-  // 8. Risks
-  const risks: StructuredRisk[] = [
-    {
-      id: "R1",
-      title: hasTimeline ? "Milestone cutoff alignment" : "Undefined delivery calendar",
-      severity: hasTimeline ? "MEDIUM" : "HIGH",
-      explanation: hasTimeline ? `Aiming for "${targetDeadline.clientWording}" requires early sign-off on design prototypes.` : "Absence of a target launch date complicates resource scheduling.",
-      recommendedAction: "Confirm target milestone calendar during the kickoff call.",
-      owner: "Both",
-    },
-    {
-      id: "R2",
-      title: "Content delivery bottlenecks",
-      severity: "MEDIUM",
-      explanation: "Late asset handoff creates delivery delays.",
-      recommendedAction: "Establish a content handoff deadline before development begins.",
-      owner: "Client",
-    },
-    {
-      id: "R3",
-      title: "Evolving functional requirements",
-      severity: "MEDIUM",
-      explanation: "Unwritten expectations can lead to scope expansion.",
-      recommendedAction: "Approve a written statement of work before kickoff.",
-      owner: "Agency",
-    },
-    {
-      id: "R4",
-      title: "Review turnaround delays",
-      severity: "LOW",
-      explanation: "Slow review turnaround stretches project timelines.",
-      recommendedAction: "Agree upon standard 48-hour feedback windows.",
-      owner: "Both",
-    },
-  ];
-
-  return {
-    facts,
-    projectTitle,
-    targetDeadline,
-    clarity,
-    summary,
-    deliverables,
-    ambiguities,
-    questions,
-    outOfScope,
-    risks,
-  };
+  return value;
 }
 
 export async function regenerateBriefSection(
-  section: "questions" | "summary" | "scope" | "risks" | "next_steps" | "deliverables" | "ambiguities",
+  section: RegenSection,
   sourceText: string,
-  currentBriefContext: string
-): Promise<any> {
+  currentBriefContext: string,
+  createdDateStr?: string
+): Promise<RegenerateResult> {
+  const spec = SECTION_SCHEMAS[section];
+  if (!spec) return { ok: false, status: 400, error: `Unknown section "${section}".` };
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
-    return { success: true };
+    return { ok: false, status: 503, error: "Section regeneration needs GEMINI_API_KEY on the server." };
   }
 
   const ai = getGeminiClient();
   const modelName = getModelName();
-  const prompt = buildSectionRegenerationPrompt(section, sourceText, currentBriefContext);
+  const prompt = buildSectionRegenerationPrompt(section, sourceText, currentBriefContext, createdDateStr, spec.key);
 
   try {
     const response = await ai.models.generateContent({
@@ -1099,35 +858,61 @@ export async function regenerateBriefSection(
 
     const responseText = response.text;
     if (!responseText) throw new Error("Empty response from Gemini.");
-    return JSON.parse(responseText.trim());
+    const parsed = JSON.parse(responseText.trim());
+    const validated = spec.schema.parse(parsed?.[spec.key]);
+    return { ok: true, data: { [spec.key]: cleanRegenerated(validated, sourceText) } };
   } catch (error) {
     console.error("Failed to regenerate section:", error);
-    return { success: false };
+    return { ok: false, status: 502, error: "The AI could not regenerate this section. Please try again." };
   }
 }
 
-export async function generateClientReadyDocument(briefJson: string): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
-    return "Client-Ready Overview generated from brief.";
-  }
+/** Deterministic client-facing Markdown: no risks, no scores (BUG-21). */
+export function buildClientReadyMarkdown(brief: ProjectBrief): string {
+  const { deliverables, questions, outOfScope } = normalizeBrief(brief);
+  const confirmed = deliverables.filter((d) => d.tag === "Confirmed");
+  const toScope = deliverables.filter((d) => d.tag !== "Confirmed");
+  const pending = outOfScope.filter((o) => o.group === "Pending client decision");
+  const lines: string[] = [`# ${brief.title} - Kickoff Alignment Brief`, ""];
 
-  const ai = getGeminiClient();
-  const modelName = getModelName();
-  const prompt = buildClientReadyPrompt(briefJson);
+  const goal = brief.executiveSummary?.goal || brief.project?.goal;
+  const summary = brief.executiveSummary?.paragraph || brief.project?.summary;
+  if (goal) lines.push("## Project Goal", goal, "");
+  if (summary) lines.push("## Summary", summary, "");
+  const deadline = brief.targetDeadline?.displayLine1 || brief.project?.deadline;
+  if (deadline) lines.push("## Timeline", `${deadline}${brief.targetDeadline?.displayLine2 ? `. ${brief.targetDeadline.displayLine2}` : ""}`, "");
+  if (confirmed.length) lines.push("## Confirmed Deliverables", ...confirmed.map((d) => `- **${d.label}**: ${d.description}`), "");
+  if (toScope.length || pending.length) {
+    lines.push(
+      "## To Be Confirmed Together",
+      ...toScope.map((d) => `- **${d.label}**: ${d.description}`),
+      ...pending.map((o) => `- **${o.label}** (optional)`),
+      ""
+    );
+  }
+  if (questions.length) lines.push("## Questions for You", ...questions.map((q, i) => `${i + 1}. ${q.text}`), "");
+  lines.push(
+    "## Next Steps",
+    "- You: reply to the questions above and share any assets you already have.",
+    "- Us: confirm scope and timeline in writing, then start the first design draft.",
+  );
+  return lines.join("\n");
+}
+
+export async function generateClientReadyDocument(brief: ProjectBrief): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "MY_GEMINI_API_KEY") return buildClientReadyMarkdown(brief);
 
   try {
+    const ai = getGeminiClient();
     const response = await ai.models.generateContent({
-      model: modelName,
-      contents: prompt,
-      config: {
-        temperature: 0.3,
-      },
+      model: getModelName(),
+      contents: buildClientReadyPrompt(JSON.stringify(brief)),
+      config: { temperature: 0.3 },
     });
-
-    return response.text || "Failed to generate client-ready text.";
+    return response.text?.trim() || buildClientReadyMarkdown(brief);
   } catch (error) {
     console.error("Failed to generate client-ready document:", error);
-    return "Client-Ready Overview generated from brief.";
+    return buildClientReadyMarkdown(brief);
   }
 }

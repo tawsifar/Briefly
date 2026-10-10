@@ -89,11 +89,6 @@ export function saveBrief(brief: ProjectBrief): ProjectBrief {
   return updatedBrief;
 }
 
-export function getBriefById(id: string): ProjectBrief | null {
-  const briefs = getStoredBriefs();
-  return briefs.find((b) => b.id === id) || (id === SAMPLE_ACME_BRIEF.id ? SAMPLE_ACME_BRIEF : null);
-}
-
 export function deleteBrief(id: string): void {
   if (typeof window === "undefined") return;
   const current = getStoredBriefs();

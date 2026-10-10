@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "clean": "next clean"
+    "clean": "next clean",
+    "check:brief": "npx -y tsx scripts/check-brief.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

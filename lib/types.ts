@@ -232,6 +232,8 @@ export interface ProjectBrief {
   structuredRisks?: StructuredRisk[];
   facts?: Fact[];
   validationIssues?: string[];
+  generated_by?: "ai" | "fallback";
+  generation_note?: string;
 
   // Legacy fields for backward compatibility
   project: ProjectMeta;

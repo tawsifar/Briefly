@@ -47,7 +47,7 @@ Every question in Section 4 must:
 - be 30 words or fewer
 - link to exactly one ambiguity through linkedAmbiguityId
 - be ordered by severity, highest first
-Number of questions: between 3 and 10.
+Number of questions: between 3 and 10. Number of ambiguities: between 3 and 10.
 
 RULE 7: RATIONALE
 Written from the agency's side in plain English, specific to this project, explaining what goes wrong if the answer is unknown. Never use internal jargon such as "sprint capacity" or "velocity".
@@ -109,7 +109,8 @@ OUTPUT STRUCTURE (JSON adhering to schema):
 export function getTodayDateInfo(): { dateStr: string; weekdayStr: string } {
   const now = new Date();
   const dateStr = now.toISOString().split("T")[0];
-  const weekdayStr = now.toLocaleDateString("en-US", { weekday: "long" });
+  // Weekday must describe the same UTC calendar day as dateStr.
+  const weekdayStr = now.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
   return { dateStr, weekdayStr };
 }
 
@@ -153,16 +154,16 @@ export function buildSectionRegenerationPrompt(
   section: "questions" | "summary" | "scope" | "risks" | "next_steps" | "deliverables" | "ambiguities",
   sourceText: string,
   currentBriefContext: string,
-  createdDateStr?: string
+  createdDateStr?: string,
+  outputKey: string = section
 ): string {
-  const today = getTodayDateInfo();
-  const createdDate = createdDateStr || today.dateStr;
+  const createdDate = createdDateStr || getTodayDateInfo().dateStr;
 
   return `You are Briefly's Project Intake Specialist.
 Selectively regenerate ONLY the "${section}" section of the project brief, strictly obeying all grounding and style rules (verbatim evidence quotes <= 25 words, no em dashes, no emoji, no banned words).
 
 CONTEXT:
-- Message Date: ${createdDate}
+- Message Date (createdDate): ${createdDate}. Resolve relative dates against this date, not today.
 
 RAW CLIENT SOURCE:
 """
@@ -174,7 +175,7 @@ CURRENT BRIEF CONTEXT:
 ${currentBriefContext}
 """
 
-Return a valid JSON object containing the updated "${section}" section.`;
+Return ONLY a JSON object of the form {"${outputKey}": ...}, where the value has exactly the same shape and field names as the "${outputKey}" section of the system output schema.`;
 }
 
 export function buildClientReadyPrompt(briefJson: string): string {

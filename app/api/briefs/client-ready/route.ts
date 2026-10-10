@@ -6,11 +6,11 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { brief } = body;
 
-    if (!brief) {
+    if (!brief || typeof brief !== "object" || typeof brief.title !== "string") {
       return NextResponse.json({ error: "Brief data is required." }, { status: 400 });
     }
 
-    const clientReadyMarkdown = await generateClientReadyDocument(JSON.stringify(brief));
+    const clientReadyMarkdown = await generateClientReadyDocument(brief);
     return NextResponse.json({ success: true, markdown: clientReadyMarkdown });
   } catch (error: any) {
     console.error("Error in /api/briefs/client-ready:", error);

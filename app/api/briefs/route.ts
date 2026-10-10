@@ -18,11 +18,16 @@ export async function POST(req: NextRequest) {
     }
 
     const today = getTodayDateInfo();
+    // Trust boundary: only accept a real YYYY-MM-DD from the client, keeping its weekday with it.
+    const hasValidDate =
+      typeof createdDate === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(createdDate) &&
+      !isNaN(new Date(`${createdDate}T00:00:00Z`).getTime());
     const { brief, validation } = await generateBrief({
-      text: (text || "").trim(),
-      projectNameHint: projectNameHint?.trim(),
-      createdDateStr: createdDate || today.dateStr,
-      weekdayStr: weekday || today.weekdayStr,
+      text: typeof text === "string" ? text.trim() : "",
+      projectNameHint: typeof projectNameHint === "string" ? projectNameHint.trim() : undefined,
+      createdDateStr: hasValidDate ? createdDate : today.dateStr,
+      weekdayStr: hasValidDate && typeof weekday === "string" ? weekday : today.weekdayStr,
       files,
     });
 
